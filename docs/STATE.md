@@ -13,7 +13,9 @@
   single-pass flow for smoke tests.
 - CLI also provides a `status` command that reuses the orchestrator runner in
   enforced dry-run mode to report detector, health, and lock readiness without
-  triggering a reboot.
+  triggering a reboot.  Optional `--skip-health` and `--skip-lock` flags allow
+  operators to bypass the health script or etcd lock when running offline
+  diagnostics.
 - The orchestration loop now retries transient runtime failures with an
   exponential backoff and listens for SIGINT/SIGTERM so operators can stop the
   daemon cleanly when managed by service supervisors.
@@ -24,8 +26,6 @@
   script environment for runtime validation.
 
 ## Next Up
-- Add optional flags to the `status` command to allow skipping the health
-  script or etcd lock attempts for quicker offline diagnostics.
 - Draft a packaging blueprint covering the systemd unit contract, file layout,
   and nfpm/packaging tooling assumptions so the eventual deb/rpm work can start
   from an agreed specification rather than ad-hoc scripts.

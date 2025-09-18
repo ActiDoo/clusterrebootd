@@ -71,7 +71,9 @@ The CLI currently offers early validation and introspection helpers:
 - `reboot-coordinator status --config /path/to/config.yaml`
   Runs a dry-run orchestration pass that evaluates detectors, executes the
   health script, and attempts to acquire the etcd lock once, reporting the
-  resulting outcome without invoking the reboot command.
+  resulting outcome without invoking the reboot command.  Pass `--skip-health`
+  to bypass the health script or `--skip-lock` to avoid contacting etcd when
+  running offline diagnostics.
 - `reboot-coordinator version`
   Prints the build version string.
 - `reboot-coordinator run`

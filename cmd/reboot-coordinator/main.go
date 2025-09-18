@@ -258,6 +258,8 @@ func commandStatusWithWriters(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("status", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	configPath := fs.String("config", config.DefaultConfigPath, "path to configuration file")
+	skipHealth := fs.Bool("skip-health", false, "skip executing the health script during status evaluation")
+	skipLock := fs.Bool("skip-lock", false, "skip attempting etcd lock acquisition during status evaluation")
 	if err := fs.Parse(args); err != nil {
 		return exitUsage
 	}
@@ -284,34 +286,65 @@ func commandStatusWithWriters(args []string, stdout, stderr io.Writer) int {
 	}
 
 	baseEnv := buildBaseEnvironment(&cfgCopy)
-
-	healthRunner, err := health.NewScriptRunner(cfgCopy.HealthScript, cfgCopy.HealthTimeout(), baseEnv)
-	if err != nil {
-		fmt.Fprintf(stderr, "failed to construct health runner: %v\n", err)
-		return exitConfigError
+	if *skipHealth {
+		baseEnv["RC_SKIP_HEALTH"] = "true"
+	}
+	if *skipLock {
+		baseEnv["RC_SKIP_LOCK"] = "true"
 	}
 
-	tlsConfig, err := buildEtcdTLSConfig(cfgCopy.EtcdTLS)
-	if err != nil {
-		fmt.Fprintf(stderr, "failed to configure etcd TLS: %v\n", err)
-		return exitConfigError
+	var healthRunner orchestrator.HealthRunner
+	if *skipHealth {
+		fmt.Fprintln(stderr, "skipping health script execution (--skip-health)")
+		healthRunner = skipHealthRunner{}
+	} else {
+		scriptRunner, runnerErr := health.NewScriptRunner(cfgCopy.HealthScript, cfgCopy.HealthTimeout(), baseEnv)
+		if runnerErr != nil {
+			fmt.Fprintf(stderr, "failed to construct health runner: %v\n", runnerErr)
+			return exitConfigError
+		}
+		healthRunner = scriptRunner
 	}
 
-	locker, err := lock.NewEtcdManager(lock.EtcdManagerOptions{
-		Endpoints:   cfgCopy.EtcdEndpoints,
-		DialTimeout: 5 * time.Second,
-		LockKey:     cfgCopy.LockKey,
-		Namespace:   cfgCopy.EtcdNamespace,
-		TTL:         cfgCopy.LockTTL(),
-		TLS:         tlsConfig,
-	})
-	if err != nil {
-		fmt.Fprintf(stderr, "failed to initialise lock manager: %v\n", err)
-		return exitRunError
-	}
-	defer locker.Close()
+	var (
+		locker      lock.Manager
+		etcdManager *lock.EtcdManager
+	)
+	if *skipLock {
+		fmt.Fprintln(stderr, "skipping lock acquisition (--skip-lock)")
+		locker = lock.NewNoopManager()
+	} else {
+		tlsConfig, tlsErr := buildEtcdTLSConfig(cfgCopy.EtcdTLS)
+		if tlsErr != nil {
+			fmt.Fprintf(stderr, "failed to configure etcd TLS: %v\n", tlsErr)
+			return exitConfigError
+		}
 
-	runner, err := orchestrator.NewRunner(&cfgCopy, engine, healthRunner, locker, orchestrator.WithMaxLockAttempts(1))
+		var mgrErr error
+		etcdManager, mgrErr = lock.NewEtcdManager(lock.EtcdManagerOptions{
+			Endpoints:   cfgCopy.EtcdEndpoints,
+			DialTimeout: 5 * time.Second,
+			LockKey:     cfgCopy.LockKey,
+			Namespace:   cfgCopy.EtcdNamespace,
+			TTL:         cfgCopy.LockTTL(),
+			TLS:         tlsConfig,
+		})
+		if mgrErr != nil {
+			fmt.Fprintf(stderr, "failed to initialise lock manager: %v\n", mgrErr)
+			return exitRunError
+		}
+		locker = etcdManager
+	}
+	if etcdManager != nil {
+		defer etcdManager.Close()
+	}
+
+	runnerOptions := []orchestrator.Option{orchestrator.WithMaxLockAttempts(1)}
+	if *skipLock {
+		runnerOptions = append(runnerOptions, orchestrator.WithLockAcquisition(false, "lock acquisition skipped (--skip-lock)"))
+	}
+
+	runner, err := orchestrator.NewRunner(&cfgCopy, engine, healthRunner, locker, runnerOptions...)
 	if err != nil {
 		fmt.Fprintf(stderr, "failed to initialise orchestrator: %v\n", err)
 		return exitRunError
@@ -498,6 +531,17 @@ func (t *trackingExecutor) Execute(ctx context.Context, command []string) error 
 	}
 	t.executed = true
 	return nil
+}
+
+type skipHealthRunner struct{}
+
+func (skipHealthRunner) Run(_ context.Context, extraEnv map[string]string) (health.Result, error) {
+	phase := strings.TrimSpace(extraEnv["RC_PHASE"])
+	if phase == "" {
+		phase = "unspecified"
+	}
+	message := fmt.Sprintf("health script skipped during %s (--skip-health)", phase)
+	return health.Result{ExitCode: 0, Stdout: message}, nil
 }
 
 func buildEtcdTLSConfig(cfg *config.EtcdTLSConfig) (*tls.Config, error) {
