@@ -10,6 +10,8 @@
 - CLI offers `validate-config`, `simulate`, `run`, and `version`; `run`
   performs the single-pass orchestration flow and reports when a reboot would
   be triggered while leaving the reboot command execution stubbed for safety.
+- A reproducible dev container (Go 1.22 with etcd 3.6.4) is available for local
+  development and integration testing.
 
 ## Next Up
 - Implement an etcd-backed lock manager and evolve the runner into the
