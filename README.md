@@ -51,9 +51,11 @@ The CLI currently offers early validation and introspection helpers:
 - `reboot-coordinator version`
   Prints the build version string.
 - `reboot-coordinator run`
-  Placeholder for the daemon runtime.  The command currently validates the
-  configuration and exits with a non-zero code to signal that the orchestration
-  loop is not yet implemented.
+  Executes a single orchestration pass: evaluates detectors, runs the health
+  script, attempts to acquire the distributed lock, and reports whether a
+  reboot would be triggered.  The current build stops short of executing the
+  reboot command, even when prerequisites are satisfied, to keep the loop
+  safe while the reboot executor is implemented.
 
 Future milestones will add the long-running coordinator loop, integration with
 etcd locking, systemd units, packaging, observability, and the full CI/CD
