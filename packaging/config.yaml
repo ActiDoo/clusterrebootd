@@ -1,0 +1,78 @@
+# Cluster Reboot Coordinator configuration template.
+#
+# The packaged defaults intentionally leave critical fields blank and keep
+# dry_run enabled so the service will not execute reboots until operators
+# review and customise the configuration.  Run `reboot-coordinator
+# validate-config --config /etc/reboot-coordinator/config.yaml` after editing
+# to confirm the daemon accepts the file.
+
+# Prevent the daemon from issuing a reboot command until configuration is
+# explicitly reviewed.
+dry_run: true
+
+# Unique identifier for this node.  Required.
+node_name: ""
+
+# Configure at least one detector that signals when a reboot is required.
+# Uncomment and adjust one or more entries below.
+reboot_required_detectors: []
+#   - name: debian-reboot-required
+#     type: file
+#     path: /var/run/reboot-required
+#   - name: rpm-needs-restarting
+#     type: command
+#     cmd: ["/usr/sbin/needs-restarting", "-r"]
+#     success_exit_codes: [1]
+#     timeout_sec: 10
+
+# Absolute path to the cluster health gate script.  Required.
+health_script: ""
+# Timeout in seconds before the health script is considered failed.
+health_timeout_sec: 45
+
+# Control how often the daemon evaluates detectors when idle.
+check_interval_sec: 300
+# Exponential backoff bounds used when transient errors occur.
+backoff_min_sec: 5
+backoff_max_sec: 60
+
+# Global kill switch that blocks reboots when the file exists.
+kill_switch_file: /etc/reboot-coordinator/disable
+
+# etcd configuration guarding concurrent reboots.
+etcd_endpoints: []
+etcd_namespace: ""
+lock_key: ""
+lock_ttl_sec: 120
+
+# Enable and configure mutual TLS when connecting to etcd.
+etcd_tls:
+  enabled: false
+  ca_file: ""
+  cert_file: ""
+  key_file: ""
+  insecure_skip_verify: false
+
+# Command executed after all detectors, health checks, and locks succeed.
+reboot_command:
+  - /sbin/shutdown
+  - -r
+  - now
+  - "coordinated reboot for ${RC_NODE_NAME}"
+
+# Cluster policy hints exported to the health script environment.
+cluster_policies:
+  min_healthy_fraction: null
+  min_healthy_absolute: null
+  forbid_if_only_fallback_left: false
+  fallback_nodes: []
+
+# Optional allow/deny reboot windows using cron-style expressions.
+windows:
+  deny: []
+  allow: []
+
+# Observability controls for the optional Prometheus metrics endpoint.
+metrics:
+  enabled: false
+  listen: 127.0.0.1:9090

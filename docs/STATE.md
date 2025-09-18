@@ -27,15 +27,20 @@
 - A packaging blueprint (`docs/PACKAGING_BLUEPRINT.md`) documents the target
   systemd contract, filesystem layout, and `nfpm` packaging skeleton so
   implementation can proceed without revisiting foundational decisions.
+- Repository now includes a `packaging/` skeleton with the `nfpm` configuration,
+  systemd unit, tmpfiles entry, default config template, and Debian/RPM
+  maintainer scripts described in the packaging blueprint, ready for build
+  integration.
 - An annotated example configuration (`examples/config.yaml`) and README
   guidance now show how to combine detectors, the health gate, metrics, and
   etcd TLS so operators have a concrete starting point before broader
   documentation lands.
 
 ## Next Up
-- Bootstrap the packaging implementation by creating the repository's
-  `packaging/` skeleton (nfpm config, systemd unit stub, tmpfiles entry, and
-  maintainer scripts) in line with `docs/PACKAGING_BLUEPRINT.md`.
+- Provide a repeatable developer workflow (e.g. Makefile target or script) that
+  stages the compiled binary into `dist/` and invokes `nfpm` with the new
+  packaging assets so package builds can be exercised locally before automation
+  lands.
 - Outline the first CI/CD workflow stage (formatting + `go test ./...` gate)
   and decide on the automation platform (e.g. GitHub Actions) so the broader
   pipeline can be implemented incrementally without blocking on high-level

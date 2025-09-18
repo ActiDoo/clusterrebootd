@@ -1,0 +1,40 @@
+#!/bin/sh
+set -eu
+
+TMPFILES_CONF="/usr/lib/tmpfiles.d/reboot-coordinator.conf"
+
+systemd_active() {
+  [ -d /run/systemd/system ] && command -v systemctl >/dev/null 2>&1
+}
+
+case "$1" in
+  configure)
+    if command -v systemd-tmpfiles >/dev/null 2>&1; then
+      if ! systemd-tmpfiles --create "${TMPFILES_CONF}"; then
+        echo "warning: failed to apply tmpfiles configuration for reboot-coordinator" >&2
+      fi
+    fi
+
+    if systemd_active; then
+      if ! systemctl daemon-reload; then
+        echo "warning: systemctl daemon-reload failed; please run manually" >&2
+      fi
+    fi
+
+    cat <<'EOM'
+Cluster Reboot Coordinator installed.
+
+Review /etc/reboot-coordinator/config.yaml, update it for your environment, and
+run:
+  sudo /usr/bin/reboot-coordinator validate-config --config /etc/reboot-coordinator/config.yaml
+
+The service is not enabled automatically.  After validation succeeds, enable it
+with:
+  sudo systemctl enable --now reboot-coordinator.service
+EOM
+    ;;
+  *)
+    ;;
+esac
+
+exit 0
