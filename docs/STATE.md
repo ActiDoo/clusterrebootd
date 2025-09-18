@@ -24,29 +24,32 @@
 - CLI run mode now wires the reporter into a JSON logger on stderr and an
   optional Prometheus metrics listener, exporting the address to the health
   script environment for runtime validation.
+- A packaging blueprint (`docs/PACKAGING_BLUEPRINT.md`) documents the target
+  systemd contract, filesystem layout, and `nfpm` packaging skeleton so
+  implementation can proceed without revisiting foundational decisions.
 - An annotated example configuration (`examples/config.yaml`) and README
   guidance now show how to combine detectors, the health gate, metrics, and
   etcd TLS so operators have a concrete starting point before broader
   documentation lands.
 
 ## Next Up
-- Draft a packaging blueprint covering the systemd unit contract, file layout,
-  and nfpm/packaging tooling assumptions so the eventual deb/rpm work can start
-  from an agreed specification rather than ad-hoc scripts.
+- Bootstrap the packaging implementation by creating the repository's
+  `packaging/` skeleton (nfpm config, systemd unit stub, tmpfiles entry, and
+  maintainer scripts) in line with `docs/PACKAGING_BLUEPRINT.md`.
 - Outline the first CI/CD workflow stage (formatting + `go test ./...` gate)
   and decide on the automation platform (e.g. GitHub Actions) so the broader
   pipeline can be implemented incrementally without blocking on high-level
   design questions.
 
 ## Backlog
-- Implement the systemd service units and full packaging assets for deb/rpm
-  targets, including maintainer scripts and permission hardening, once the
-  blueprint above is ratified.
 - Establish complete CI/CD workflows covering linting, tests, packaging, SBOM,
   and signing after the initial pipeline slice proves out.
 - Expand operator documentation beyond the sample config to include install
   guides, health script best practices, and troubleshooting once the reference
   example is reviewed.
+- Design automated install/uninstall validation (e.g. container-based smoke
+  tests) for the produced packages once the initial packaging skeleton is in
+  place.
 
 ## Open Questions
 - Finalise the exact etcd keyspace layout and RBAC policy for the distributed lock.
