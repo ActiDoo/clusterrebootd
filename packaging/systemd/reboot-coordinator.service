@@ -1,0 +1,20 @@
+[Unit]
+Description=Cluster Reboot Coordinator
+Documentation=https://github.com/clusterrebootd/clusterrebootd
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=60
+StartLimitBurst=5
+ConditionPathExists=!/etc/reboot-coordinator/disable
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/reboot-coordinator run --config /etc/reboot-coordinator/config.yaml
+Restart=always
+RestartSec=5
+RuntimeDirectory=reboot-coordinator
+RuntimeDirectoryMode=0750
+# Environment overrides can be placed in /etc/systemd/system/reboot-coordinator.service.d/*.conf
+
+[Install]
+WantedBy=multi-user.target

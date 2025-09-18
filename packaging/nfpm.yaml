@@ -1,0 +1,62 @@
+name: reboot-coordinator
+arch: ${ARCH}
+platform: linux
+version: ${VERSION}
+section: admin
+priority: optional
+description: |
+  Cluster Reboot Coordinator daemon that serialises kernel reboots behind etcd locking
+  and cluster health gates.
+license: Apache-2.0
+homepage: https://github.com/clusterrebootd/clusterrebootd
+maintainer: Platform SRE Team <sre@example.com>
+contents:
+  - src: ./dist/reboot-coordinator
+    dst: /usr/bin/reboot-coordinator
+    file_info:
+      mode: 0755
+  - src: ./packaging/config.yaml
+    dst: /etc/reboot-coordinator/config.yaml
+    type: config
+    file_info:
+      mode: 0640
+  - src: ./packaging/systemd/reboot-coordinator.service
+    dst: /lib/systemd/system/reboot-coordinator.service
+    file_info:
+      mode: 0644
+  - src: ./packaging/tmpfiles/reboot-coordinator.conf
+    dst: /usr/lib/tmpfiles.d/reboot-coordinator.conf
+    file_info:
+      mode: 0644
+  - src: ./LICENSE
+    dst: /usr/share/licenses/reboot-coordinator/LICENSE
+    file_info:
+      mode: 0644
+  - src: ./docs/PACKAGING_BLUEPRINT.md
+    dst: /usr/share/doc/reboot-coordinator/PACKAGING_BLUEPRINT.md
+    file_info:
+      mode: 0644
+overrides:
+  deb:
+    depends:
+      - systemd
+    recommends:
+      - ca-certificates
+    contents:
+      - src: ./packaging/docs/README.Debian
+        dst: /usr/share/doc/reboot-coordinator/README.Debian
+        file_info:
+          mode: 0644
+    scripts:
+      preinstall: ./packaging/scripts/deb/preinst
+      postinstall: ./packaging/scripts/deb/postinst
+      prerm: ./packaging/scripts/deb/prerm
+      postrm: ./packaging/scripts/deb/postrm
+  rpm:
+    depends:
+      - systemd
+    scripts:
+      preinstall: ./packaging/scripts/rpm/preinstall.sh
+      postinstall: ./packaging/scripts/rpm/postinstall.sh
+      preremove: ./packaging/scripts/rpm/preremove.sh
+      postremove: ./packaging/scripts/rpm/postremove.sh

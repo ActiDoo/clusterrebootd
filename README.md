@@ -19,6 +19,7 @@ pkg/config              # YAML configuration structures, defaults, and validatio
 pkg/detector            # Pluggable reboot-required detectors (file/command)
 pkg/health              # Cluster health script runner with timeout enforcement
 pkg/version             # Version metadata exposed via the CLI
+packaging               # nfpm packaging config, systemd unit, and maintainer scripts
 ```
 
 Additional directories such as `deploy/`, `scripts/`, and packaging assets will
