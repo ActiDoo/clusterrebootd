@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/clusterrebootd/clusterrebootd/internal/testutil"
 	"github.com/clusterrebootd/clusterrebootd/pkg/orchestrator"
 )
 
@@ -80,6 +81,9 @@ func TestCommandRunWithoutReboot(t *testing.T) {
 	marker := filepath.Join(dir, "reboot-required")
 	killSwitch := filepath.Join(dir, "kill-switch")
 
+	cluster := testutil.StartEmbeddedEtcd(t)
+	endpoint := cluster.Endpoints[0]
+
 	configData := fmt.Sprintf(`
 node_name: node-a
 reboot_required_detectors:
@@ -87,11 +91,11 @@ reboot_required_detectors:
     path: %s
 health_script: /bin/true
 etcd_endpoints:
-  - 127.0.0.1:2379
+  - %s
 kill_switch_file: %s
 lock_key: /cluster/reboot-coordinator/lock
 lock_ttl_sec: 120
-`, marker, killSwitch)
+`, marker, endpoint, killSwitch)
 
 	if err := os.WriteFile(configPath, []byte(configData), 0o644); err != nil {
 		t.Fatalf("failed to write config: %v", err)
@@ -121,6 +125,9 @@ func TestCommandRunDryRunReady(t *testing.T) {
 	marker := filepath.Join(dir, "reboot-required")
 	killSwitch := filepath.Join(dir, "kill-switch")
 
+	cluster := testutil.StartEmbeddedEtcd(t)
+	endpoint := cluster.Endpoints[0]
+
 	configData := fmt.Sprintf(`
 node_name: node-a
 reboot_required_detectors:
@@ -128,11 +135,11 @@ reboot_required_detectors:
     path: %s
 health_script: /bin/true
 etcd_endpoints:
-  - 127.0.0.1:2379
+  - %s
 kill_switch_file: %s
 lock_key: /cluster/reboot-coordinator/lock
 lock_ttl_sec: 120
-`, marker, killSwitch)
+`, marker, endpoint, killSwitch)
 
 	if err := os.WriteFile(configPath, []byte(configData), 0o644); err != nil {
 		t.Fatalf("failed to write config: %v", err)

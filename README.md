@@ -26,7 +26,7 @@ be introduced as the orchestrator matures.
 
 ## Getting Started
 
-1. Ensure Go 1.22 or newer is installed.
+1. Ensure Go 1.23 or newer is installed.
 2. Fetch module dependencies and run the tests:
 
    ```bash
