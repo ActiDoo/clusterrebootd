@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -206,5 +207,54 @@ metrics:
 
 	if !strings.Contains(stderr.String(), "metrics server listening on") {
 		t.Fatalf("expected metrics server startup message, stderr: %s", stderr.String())
+	}
+}
+
+func TestCommandRunMetricsListenerFailure(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("file paths and /bin/true not available on Windows test environment")
+	}
+
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "config.yaml")
+	marker := filepath.Join(dir, "reboot-required")
+	killSwitch := filepath.Join(dir, "kill-switch")
+
+	cluster := testutil.StartEmbeddedEtcd(t)
+	endpoint := cluster.Endpoints[0]
+
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("failed to reserve port: %v", err)
+	}
+	defer listener.Close()
+
+	configData := fmt.Sprintf(`
+node_name: node-a
+reboot_required_detectors:
+  - type: file
+    path: %s
+health_script: /bin/true
+etcd_endpoints:
+  - %s
+kill_switch_file: %s
+lock_key: /cluster/reboot-coordinator/lock
+lock_ttl_sec: 120
+metrics:
+  enabled: true
+  listen: %s
+`, marker, endpoint, killSwitch, listener.Addr().String())
+
+	if err := os.WriteFile(configPath, []byte(configData), 0o644); err != nil {
+		t.Fatalf("failed to write config: %v", err)
+	}
+
+	var stdout, stderr bytes.Buffer
+	exitCode := commandRunWithWriters([]string{"--config", configPath, "--dry-run", "--once"}, &stdout, &stderr)
+	if exitCode != exitRunError {
+		t.Fatalf("expected exitRunError when metrics listener fails, got %d (stderr: %s)", exitCode, stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "failed to start metrics listener") {
+		t.Fatalf("expected metrics listener failure logged, stderr: %s", stderr.String())
 	}
 }

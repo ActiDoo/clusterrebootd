@@ -155,6 +155,7 @@ func commandRunWithWriters(args []string, stdout, stderr io.Writer) int {
 		metricsServer   *http.Server
 		metricsErrCh    chan error
 		metricsEndpoint string
+		metricsLogDone  chan struct{}
 	)
 	if cfg.Metrics.Enabled {
 		promCollector := observability.NewPrometheusCollector()
@@ -178,6 +179,13 @@ func commandRunWithWriters(args []string, stdout, stderr io.Writer) int {
 			}
 			close(metricsErrCh)
 		}()
+		metricsLogDone = make(chan struct{})
+		go func() {
+			defer close(metricsLogDone)
+			for err := range metricsErrCh {
+				fmt.Fprintf(stderr, "metrics server error: %v\n", err)
+			}
+		}()
 		fmt.Fprintf(stderr, "metrics server listening on %s\n", metricsEndpoint)
 		defer func() {
 			shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -185,8 +193,8 @@ func commandRunWithWriters(args []string, stdout, stderr io.Writer) int {
 			if err := metricsServer.Shutdown(shutdownCtx); err != nil && !errors.Is(err, context.Canceled) && !errors.Is(err, http.ErrServerClosed) {
 				fmt.Fprintf(stderr, "metrics server shutdown error: %v\n", err)
 			}
-			for err := range metricsErrCh {
-				fmt.Fprintf(stderr, "metrics server error: %v\n", err)
+			if metricsLogDone != nil {
+				<-metricsLogDone
 			}
 		}()
 	}
@@ -243,9 +251,6 @@ func commandRunWithWriters(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "failed to initialise orchestration loop: %v\n", err)
 		return exitRunError
 	}
-
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
 
 	if err := loop.Run(ctx); err != nil {
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {

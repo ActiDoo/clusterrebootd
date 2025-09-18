@@ -19,9 +19,13 @@
 - CLI run mode now wires the reporter into a JSON logger on stderr and an
   optional Prometheus metrics listener, exporting the address to the health
   script environment for runtime validation.
+- Metrics listener lifecycle now streams serve errors to stderr as they occur
+  and guarantees graceful shutdown so observability regressions surface
+  immediately during orchestration.
 
 ## Next Up
-- (to be filled)
+- Implement the `status` CLI command to expose current lock state and last
+  orchestration outcome for operators without parsing logs.
 
 ## Backlog
 - Add systemd service files and packaging assets for deb/rpm targets.
