@@ -307,3 +307,8 @@ func (c *Config) LockTTL() time.Duration {
 func (c *Config) BackoffBounds() (time.Duration, time.Duration) {
 	return time.Duration(c.BackoffMinSec) * time.Second, time.Duration(c.BackoffMaxSec) * time.Second
 }
+
+// CheckInterval returns how long the orchestrator waits between evaluation passes.
+func (c *Config) CheckInterval() time.Duration {
+	return time.Duration(c.CheckIntervalSec) * time.Second
+}

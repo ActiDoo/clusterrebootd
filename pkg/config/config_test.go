@@ -4,6 +4,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestDecodeValidConfig(t *testing.T) {
@@ -86,5 +87,12 @@ func TestDetectorValidation(t *testing.T) {
 	}
 	if err := cfg.Validate(); err == nil {
 		t.Fatal("expected validation to fail for invalid detector")
+	}
+}
+
+func TestCheckInterval(t *testing.T) {
+	cfg := Config{CheckIntervalSec: 42}
+	if got := cfg.CheckInterval(); got != 42*time.Second {
+		t.Fatalf("expected 42s check interval, got %s", got)
 	}
 }
