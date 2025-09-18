@@ -3,6 +3,8 @@
 ## Current State
 - Core libraries for configuration parsing/validation, reboot detectors, and the
   health script runner exist but the orchestrator loop is not yet implemented.
+- Detector engine aggregates per-detector results with timing and command output
+  to support simulation and future orchestration decisions.
 - CLI offers `validate-config`, `simulate`, and `version`; `run` is a placeholder.
 
 ## Next Up

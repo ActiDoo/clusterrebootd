@@ -64,6 +64,11 @@ Each detector supports per-run timeouts (for commands) to avoid hanging the
 coordinator.  Future detectors may include package-manager integrations or API
 probes.
 
+Detector evaluations yield structured results capturing the reboot decision,
+execution duration, and for command detectors the captured stdout/stderr and
+exit codes.  This data powers the simulation CLI and will feed structured
+logging in the orchestrator.
+
 ## Health Gate Execution
 
 The health gate runs an operator-provided script.  The runner enforces:

@@ -45,8 +45,9 @@ The CLI currently offers early validation and introspection helpers:
   Validates the configuration schema, defaulting missing fields and ensuring
   semantic requirements such as TTL bounds.
 - `reboot-coordinator simulate --config /path/to/config.yaml`
-  Loads the configuration, instantiates detectors, and prints a summary without
-  interacting with etcd or rebooting the host.
+  Loads the configuration, instantiates detectors, executes them once, and
+  prints a summary with per-detector results without interacting with etcd or
+  rebooting the host.
 - `reboot-coordinator version`
   Prints the build version string.
 - `reboot-coordinator run`
