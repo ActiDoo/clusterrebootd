@@ -8,6 +8,8 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"net"
+	"net/http"
 	"os"
 	"os/signal"
 	"strconv"
@@ -19,6 +21,7 @@ import (
 	"github.com/clusterrebootd/clusterrebootd/pkg/detector"
 	"github.com/clusterrebootd/clusterrebootd/pkg/health"
 	"github.com/clusterrebootd/clusterrebootd/pkg/lock"
+	"github.com/clusterrebootd/clusterrebootd/pkg/observability"
 	"github.com/clusterrebootd/clusterrebootd/pkg/orchestrator"
 	"github.com/clusterrebootd/clusterrebootd/pkg/version"
 )
@@ -97,6 +100,9 @@ func commandRunWithWriters(args []string, stdout, stderr io.Writer) int {
 		cfg.DryRun = true
 	}
 
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
 	detectors, err := detector.NewAll(cfg.RebootRequiredDetectors)
 	if err != nil {
 		fmt.Fprintf(stderr, "failed to construct detectors: %v\n", err)
@@ -123,12 +129,6 @@ func commandRunWithWriters(args []string, stdout, stderr io.Writer) int {
 		baseEnv["RC_KILL_SWITCH_FILE"] = cfg.KillSwitchFile
 	}
 
-	healthRunner, err := health.NewScriptRunner(cfg.HealthScript, cfg.HealthTimeout(), baseEnv)
-	if err != nil {
-		fmt.Fprintf(stderr, "failed to construct health runner: %v\n", err)
-		return exitConfigError
-	}
-
 	tlsConfig, err := buildEtcdTLSConfig(cfg.EtcdTLS)
 	if err != nil {
 		fmt.Fprintf(stderr, "failed to configure etcd TLS: %v\n", err)
@@ -149,7 +149,57 @@ func commandRunWithWriters(args []string, stdout, stderr io.Writer) int {
 	}
 	defer locker.Close()
 
-	runner, err := orchestrator.NewRunner(cfg, engine, healthRunner, locker)
+	jsonLogger := observability.NewJSONLogger(stderr)
+	metricsCollector := observability.MetricsCollector(observability.NoopMetricsCollector{})
+	var (
+		metricsServer   *http.Server
+		metricsErrCh    chan error
+		metricsEndpoint string
+	)
+	if cfg.Metrics.Enabled {
+		promCollector := observability.NewPrometheusCollector()
+		listener, listenErr := net.Listen("tcp", cfg.Metrics.Listen)
+		if listenErr != nil {
+			fmt.Fprintf(stderr, "failed to start metrics listener on %s: %v\n", cfg.Metrics.Listen, listenErr)
+			return exitRunError
+		}
+		metricsEndpoint = listener.Addr().String()
+		baseEnv["RC_METRICS_ENDPOINT"] = metricsEndpoint
+		metricsCollector = promCollector
+		metricsServer = &http.Server{
+			Addr:              metricsEndpoint,
+			Handler:           promCollector.Handler(),
+			ReadHeaderTimeout: 5 * time.Second,
+		}
+		metricsErrCh = make(chan error, 1)
+		go func() {
+			if err := metricsServer.Serve(listener); err != nil && !errors.Is(err, http.ErrServerClosed) {
+				metricsErrCh <- err
+			}
+			close(metricsErrCh)
+		}()
+		fmt.Fprintf(stderr, "metrics server listening on %s\n", metricsEndpoint)
+		defer func() {
+			shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			if err := metricsServer.Shutdown(shutdownCtx); err != nil && !errors.Is(err, context.Canceled) && !errors.Is(err, http.ErrServerClosed) {
+				fmt.Fprintf(stderr, "metrics server shutdown error: %v\n", err)
+			}
+			for err := range metricsErrCh {
+				fmt.Fprintf(stderr, "metrics server error: %v\n", err)
+			}
+		}()
+	}
+
+	healthRunner, err := health.NewScriptRunner(cfg.HealthScript, cfg.HealthTimeout(), baseEnv)
+	if err != nil {
+		fmt.Fprintf(stderr, "failed to construct health runner: %v\n", err)
+		return exitConfigError
+	}
+
+	reporter := orchestrator.NewStructuredReporter(cfg.NodeName, jsonLogger, metricsCollector)
+
+	runner, err := orchestrator.NewRunner(cfg, engine, healthRunner, locker, orchestrator.WithReporter(reporter))
 	if err != nil {
 		fmt.Fprintf(stderr, "failed to initialise orchestrator: %v\n", err)
 		return exitRunError
@@ -158,8 +208,12 @@ func commandRunWithWriters(args []string, stdout, stderr io.Writer) int {
 	fmt.Fprintf(stdout, "starting orchestration for node %s (dry-run=%v)\n", cfg.NodeName, cfg.DryRun)
 
 	if *once {
-		outcome, runErr := runner.RunOnce(context.Background())
+		outcome, runErr := runner.RunOnce(ctx)
 		if runErr != nil {
+			if errors.Is(runErr, context.Canceled) || errors.Is(runErr, context.DeadlineExceeded) {
+				fmt.Fprintf(stderr, "orchestration cancelled: %v\n", runErr)
+				return exitOK
+			}
 			fmt.Fprintf(stderr, "orchestration error: %v\n", runErr)
 			return exitRunError
 		}

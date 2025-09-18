@@ -82,6 +82,27 @@ Future milestones will extend the loop with structured logging, observability
 integrations, packaging assets, and the full CI/CD pipeline described in the
 PRD.
 
+### Observability
+
+Running `reboot-coordinator run` now emits structured JSON logs to stderr for
+each orchestration event (detector evaluation, lock attempts, health script
+results, final outcomes).  The logs include fields for node identity, stage,
+duration, and status so they can be forwarded directly into log processors or
+systemd journal.
+
+Metrics can be exposed via Prometheus by enabling the configuration block:
+
+```yaml
+metrics:
+  enabled: true
+  listen: 0.0.0.0:9090
+```
+
+When enabled, the daemon starts an HTTP listener on the configured address and
+serves Prometheus-compatible counters and histograms under `/metrics`.  The
+environment of the health script receives `RC_METRICS_ENDPOINT` so checks can
+optionally validate that scraping works as expected.
+
 ## Operational Guidance
 
 - `reboot-coordinator run` listens for `SIGINT` and `SIGTERM` and exits
