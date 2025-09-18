@@ -38,6 +38,25 @@ be introduced as the orchestrator matures.
    inspired starting point or adapt the PRD sample.  The CLI defaults to
    `/etc/reboot-coordinator/config.yaml` but accepts an explicit `--config` flag.
 
+## Build & Packaging Workflow
+
+The repository ships with a `Makefile` that standardises common developer tasks:
+
+- `make build` compiles the `reboot-coordinator` binary for Linux using static
+  linking defaults and stages the artefact under `dist/`.
+- `make test` executes `go test ./...`.
+- `make package` cross-compiles the binary for `amd64` and `arm64` and invokes
+  [`nfpm`](https://nfpm.goreleaser.com/) to produce `.deb` and `.rpm` packages in
+  `dist/packages/`.
+
+Set `ARCHES=amd64` (or `arm64`) to restrict the architectures, override
+`VERSION` to package a specific release string, or point `NFPM` to an alternate
+`nfpm` binary when developing inside containers.  Ensure `nfpm` is available in
+the `PATH` before invoking the packaging target.
+
+Generated artefacts live under `dist/` and are ignored by git so developers can
+cleanly iterate on builds and packages without polluting commits.
+
 ## Example Configuration
 
 The repository ships an annotated sample at `examples/config.yaml` that
