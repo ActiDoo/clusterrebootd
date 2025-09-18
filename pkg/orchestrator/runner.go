@@ -34,6 +34,7 @@ const (
 	OutcomeKillSwitch      OutcomeStatus = "kill_switch_active"
 	OutcomeHealthBlocked   OutcomeStatus = "health_blocked"
 	OutcomeLockUnavailable OutcomeStatus = "lock_unavailable"
+	OutcomeLockSkipped     OutcomeStatus = "lock_skipped"
 	OutcomeRecheckCleared  OutcomeStatus = "recheck_cleared"
 	OutcomeReady           OutcomeStatus = "ready"
 )
@@ -63,6 +64,8 @@ type Runner struct {
 	rnd            *rand.Rand
 	maxLockTries   int
 	reporter       Reporter
+	lockEnabled    bool
+	lockSkipReason string
 }
 
 // Option configures a Runner.
@@ -107,6 +110,20 @@ func WithReporter(rep Reporter) Option {
 	}
 }
 
+// WithLockAcquisition configures whether the runner should attempt to acquire the distributed lock.
+// When disabled, the runner skips lock acquisition and post-lock checks, returning an OutcomeLockSkipped
+// result annotated with the provided reason (when supplied).
+func WithLockAcquisition(enabled bool, reason string) Option {
+	return func(r *Runner) {
+		r.lockEnabled = enabled
+		if !enabled {
+			r.lockSkipReason = strings.TrimSpace(reason)
+		} else {
+			r.lockSkipReason = ""
+		}
+	}
+}
+
 // NewRunner constructs a Runner with the provided dependencies.
 func NewRunner(cfg *config.Config, detectors DetectorEvaluator, healthRunner HealthRunner, locker lock.Manager, opts ...Option) (*Runner, error) {
 	if cfg == nil {
@@ -133,6 +150,7 @@ func NewRunner(cfg *config.Config, detectors DetectorEvaluator, healthRunner Hea
 		rnd:            rand.New(rand.NewSource(time.Now().UnixNano())),
 		maxLockTries:   5,
 		reporter:       NoopReporter{},
+		lockEnabled:    true,
 	}
 
 	for _, opt := range opts {
@@ -200,6 +218,20 @@ func (r *Runner) RunOnce(ctx context.Context) (out Outcome, err error) {
 	if preHealth.ExitCode != 0 {
 		out.Status = OutcomeHealthBlocked
 		out.Message = fmt.Sprintf("health script blocked reboot before lock (exit %d)", preHealth.ExitCode)
+		return out, nil
+	}
+
+	if !r.lockEnabled {
+		out.Status = OutcomeLockSkipped
+		msg := r.lockSkipReason
+		if msg == "" {
+			msg = "lock acquisition disabled"
+		}
+		out.Message = msg
+		out.DryRun = r.cfg.DryRun
+		if len(r.cfg.RebootCommand) > 0 {
+			out.Command = append([]string(nil), r.cfg.RebootCommand...)
+		}
 		return out, nil
 	}
 
@@ -638,7 +670,7 @@ func (r *Runner) recordOutcome(ctx context.Context, out Outcome) {
 
 	level := observability.LevelInfo
 	switch out.Status {
-	case OutcomeKillSwitch, OutcomeHealthBlocked, OutcomeLockUnavailable:
+	case OutcomeKillSwitch, OutcomeHealthBlocked, OutcomeLockUnavailable, OutcomeLockSkipped:
 		level = observability.LevelWarn
 	}
 

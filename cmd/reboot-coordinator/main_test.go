@@ -361,3 +361,104 @@ lock_ttl_sec: 120
 		t.Fatalf("expected lock_unavailable outcome, got: %s", output)
 	}
 }
+
+func TestCommandStatusSkipHealth(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("file paths and /bin/true not available on Windows test environment")
+	}
+
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "config.yaml")
+	marker := filepath.Join(dir, "reboot-required")
+	missingHealth := filepath.Join(dir, "missing-health.sh")
+
+	cluster := testutil.StartEmbeddedEtcd(t)
+	endpoint := cluster.Endpoints[0]
+
+	configData := fmt.Sprintf(`
+node_name: node-a
+reboot_required_detectors:
+  - type: file
+    path: %s
+health_script: %s
+etcd_endpoints:
+  - %s
+lock_key: /cluster/reboot-coordinator/lock
+lock_ttl_sec: 120
+`, marker, missingHealth, endpoint)
+
+	if err := os.WriteFile(configPath, []byte(configData), 0o644); err != nil {
+		t.Fatalf("failed to write config: %v", err)
+	}
+	if err := os.WriteFile(marker, []byte("1"), 0o644); err != nil {
+		t.Fatalf("failed to create marker: %v", err)
+	}
+
+	var stdout, stderr bytes.Buffer
+	exitCode := commandStatusWithWriters([]string{"--config", configPath, "--skip-health"}, &stdout, &stderr)
+	if exitCode != exitOK {
+		t.Fatalf("expected exitOK, got %d (stderr: %s)", exitCode, stderr.String())
+	}
+
+	if !strings.Contains(stderr.String(), "skipping health script execution (--skip-health)") {
+		t.Fatalf("expected health skip notice in stderr, got: %s", stderr.String())
+	}
+
+	output := stdout.String()
+	if !strings.Contains(output, fmt.Sprintf("outcome: %s", orchestrator.OutcomeReady)) {
+		t.Fatalf("expected ready outcome with skip health, got: %s", output)
+	}
+	if !strings.Contains(output, "health script skipped") {
+		t.Fatalf("expected skip health message in output, got: %s", output)
+	}
+}
+
+func TestCommandStatusSkipLock(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("file paths and /bin/true not available on Windows test environment")
+	}
+
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "config.yaml")
+	marker := filepath.Join(dir, "reboot-required")
+
+	configData := fmt.Sprintf(`
+node_name: node-a
+reboot_required_detectors:
+  - type: file
+    path: %s
+health_script: /bin/true
+etcd_endpoints:
+  - 127.0.0.1:12379
+lock_key: /cluster/reboot-coordinator/lock
+lock_ttl_sec: 120
+`, marker)
+
+	if err := os.WriteFile(configPath, []byte(configData), 0o644); err != nil {
+		t.Fatalf("failed to write config: %v", err)
+	}
+	if err := os.WriteFile(marker, []byte("1"), 0o644); err != nil {
+		t.Fatalf("failed to create marker: %v", err)
+	}
+
+	var stdout, stderr bytes.Buffer
+	exitCode := commandStatusWithWriters([]string{"--config", configPath, "--skip-lock"}, &stdout, &stderr)
+	if exitCode != exitOK {
+		t.Fatalf("expected exitOK, got %d (stderr: %s)", exitCode, stderr.String())
+	}
+
+	if !strings.Contains(stderr.String(), "skipping lock acquisition (--skip-lock)") {
+		t.Fatalf("expected lock skip notice in stderr, got: %s", stderr.String())
+	}
+
+	output := stdout.String()
+	if !strings.Contains(output, fmt.Sprintf("outcome: %s", orchestrator.OutcomeLockSkipped)) {
+		t.Fatalf("expected lock_skipped outcome, got: %s", output)
+	}
+	if !strings.Contains(output, "lock acquisition skipped") {
+		t.Fatalf("expected lock skip message in output, got: %s", output)
+	}
+	if !strings.Contains(output, "planned reboot command") {
+		t.Fatalf("expected planned reboot command in skip-lock output, got: %s", output)
+	}
+}

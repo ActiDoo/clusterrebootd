@@ -257,6 +257,43 @@ func TestRunnerLockUnavailable(t *testing.T) {
 	}
 }
 
+func TestRunnerLockSkipped(t *testing.T) {
+	cfg := baseConfig()
+	engine := &fakeEngine{steps: []evalStep{{requires: true, results: []detector.Result{{Name: "pre"}}}}}
+	healthRunner := &fakeHealth{steps: []healthStep{{result: health.Result{ExitCode: 0}}}}
+	locker := &fakeLocker{}
+
+	reason := "lock acquisition skipped for diagnostics"
+	runner, err := NewRunner(cfg, engine, healthRunner, locker, WithLockAcquisition(false, reason))
+	if err != nil {
+		t.Fatalf("failed to create runner: %v", err)
+	}
+
+	outcome, err := runner.RunOnce(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if outcome.Status != OutcomeLockSkipped {
+		t.Fatalf("expected OutcomeLockSkipped, got %s", outcome.Status)
+	}
+	if outcome.Message != reason {
+		t.Fatalf("expected message %q, got %q", reason, outcome.Message)
+	}
+	if outcome.LockAcquired {
+		t.Fatal("expected LockAcquired to be false when lock is skipped")
+	}
+	if len(outcome.Command) != len(cfg.RebootCommand) {
+		t.Fatalf("expected reboot command to be populated, got %v", outcome.Command)
+	}
+	if locker.calls != 0 {
+		t.Fatalf("expected no lock attempts, got %d", locker.calls)
+	}
+	if healthRunner.calls != 1 {
+		t.Fatalf("expected one health script execution, got %d", healthRunner.calls)
+	}
+}
+
 func TestRunnerRecheckCleared(t *testing.T) {
 	cfg := baseConfig()
 	lease := &fakeLease{}
