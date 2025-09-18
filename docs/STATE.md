@@ -2,23 +2,24 @@
 
 ## Current State
 - Core libraries for configuration parsing/validation, reboot detectors, and the
-  health script runner are joined by an orchestrator runner that executes a
-  single reboot pass with detector rechecks, kill-switch handling, and health
-  gating backed by an etcd lock manager with retries and configurable TTLs.
+  health script runner are joined by an orchestrator runner and loop that perform
+  detector rechecks, honour the kill switch, enforce health gating, and, when
+  prerequisites succeed, execute the configured reboot command via the long-lived
+  coordinator loop.
 - Detector engine aggregates per-detector results with timing and command output
   to support simulation, orchestration decisions, and CLI reporting.
-- CLI offers `validate-config`, `simulate`, `run`, and `version`; `run`
-  performs the single-pass orchestration flow and reports when a reboot would
-  be triggered while leaving the reboot command execution stubbed for safety.
+- CLI offers `validate-config`, `simulate`, `run`, and `version`; `run` now drives
+  the long-lived orchestration loop while `--once` preserves the diagnostic
+  single-pass flow for smoke tests.
 - A reproducible dev container (Go 1.22 with etcd 3.6.4) is available for local
   development and integration testing.
 
 ## Next Up
-- Evolve the single-pass runner into the long-lived orchestration loop, adding
-  lock lease renewal, repeated health checks, and an execution path for the
-  reboot command once safeguards are fully in place.
 - Define structured logging fields and metrics scaffolding so the loop can emit
   observability data once integrated.
+- Harden the loop with graceful error handling (transient retry strategy,
+  signal-aware shutdown) and document operational guidance for running it as a
+  daemon.
 
 ## Backlog
 - Build observability surfaces (JSON logging defaults, Prometheus collectors).

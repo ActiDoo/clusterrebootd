@@ -63,7 +63,7 @@ func run(args []string) int {
 func usage() {
 	fmt.Fprintf(os.Stderr, `Usage: reboot-coordinator <command> [options]
 Commands:
-  run                Execute a single orchestration pass
+  run                Start the orchestration loop (use --once for a single pass)
   validate-config    Validate the configuration file
   simulate           Validate detectors and show configuration summary
   status             Display current coordinator status
@@ -80,6 +80,7 @@ func commandRunWithWriters(args []string, stdout, stderr io.Writer) int {
 	fs.SetOutput(stderr)
 	configPath := fs.String("config", config.DefaultConfigPath, "path to configuration file")
 	dryRun := fs.Bool("dry-run", false, "enable dry-run mode")
+	once := fs.Bool("once", false, "execute a single orchestration pass and exit")
 	if err := fs.Parse(args); err != nil {
 		return exitUsage
 	}
@@ -153,39 +154,45 @@ func commandRunWithWriters(args []string, stdout, stderr io.Writer) int {
 
 	fmt.Fprintf(stdout, "starting orchestration for node %s (dry-run=%v)\n", cfg.NodeName, cfg.DryRun)
 
-	outcome, runErr := runner.RunOnce(context.Background())
-	if runErr != nil {
-		fmt.Fprintf(stderr, "orchestration error: %v\n", runErr)
+	if *once {
+		outcome, runErr := runner.RunOnce(context.Background())
+		if runErr != nil {
+			fmt.Fprintf(stderr, "orchestration error: %v\n", runErr)
+			return exitRunError
+		}
+		reportOutcome(stdout, outcome)
+		if !outcome.DryRun && outcome.Status == orchestrator.OutcomeReady {
+			fmt.Fprintln(stdout, "ready outcome reached; run without --once to execute the reboot command")
+		}
+		return exitOK
+	}
+
+	tracker := &trackingExecutor{delegate: orchestrator.NewExecCommandExecutor(nil, nil)}
+	var lastOutcome orchestrator.Outcome
+	iteration := 0
+	loop, err := orchestrator.NewLoop(cfg, runner, tracker, orchestrator.WithLoopIterationHook(func(outcome orchestrator.Outcome) {
+		iteration++
+		fmt.Fprintf(stdout, "iteration %d results:\n", iteration)
+		reportOutcome(stdout, outcome)
+		fmt.Fprintln(stdout)
+		lastOutcome = outcome
+	}))
+	if err != nil {
+		fmt.Fprintf(stderr, "failed to initialise orchestration loop: %v\n", err)
 		return exitRunError
 	}
 
-	fmt.Fprintln(stdout, "pre-lock detector evaluations:")
-	writeDetectorResults(stdout, outcome.DetectorResults)
-	if outcome.PreLockHealthResult != nil {
-		writeHealthResult(stdout, "pre-lock health", outcome.PreLockHealthResult)
+	if err := loop.Run(context.Background()); err != nil {
+		fmt.Fprintf(stderr, "orchestration loop error: %v\n", err)
+		return exitRunError
 	}
 
-	if outcome.LockAcquired {
-		fmt.Fprintln(stdout, "lock acquired")
-	}
-
-	if len(outcome.PostLockDetectorResults) > 0 {
-		fmt.Fprintln(stdout, "post-lock detector evaluations:")
-		writeDetectorResults(stdout, outcome.PostLockDetectorResults)
-	}
-	if outcome.PostLockHealthResult != nil {
-		writeHealthResult(stdout, "post-lock health", outcome.PostLockHealthResult)
-	}
-
-	fmt.Fprintf(stdout, "outcome: %s - %s\n", outcome.Status, outcome.Message)
-	if len(outcome.Command) > 0 {
-		fmt.Fprintf(stdout, "planned reboot command: %s\n", strings.Join(outcome.Command, " "))
-	}
-	if outcome.DryRun {
-		fmt.Fprintln(stdout, "dry-run enabled: reboot command not executed")
-	} else if outcome.Status == orchestrator.OutcomeReady {
-		fmt.Fprintln(stdout, "reboot command execution not yet implemented; operator action required")
-		return exitNotImplemented
+	if lastOutcome.Status == orchestrator.OutcomeReady && !cfg.DryRun {
+		if tracker.executed {
+			fmt.Fprintln(stdout, "reboot command invoked; system reboot should be in progress")
+		} else {
+			fmt.Fprintln(stdout, "ready outcome reached but reboot command was not executed")
+		}
 	}
 
 	return exitOK
@@ -299,6 +306,44 @@ func writeHealthResult(w io.Writer, label string, res *health.Result) {
 	if errText := strings.TrimSpace(res.Stderr); errText != "" {
 		fmt.Fprintf(w, "  stderr: %s\n", errText)
 	}
+}
+
+func reportOutcome(stdout io.Writer, outcome orchestrator.Outcome) {
+	fmt.Fprintln(stdout, "pre-lock detector evaluations:")
+	writeDetectorResults(stdout, outcome.DetectorResults)
+	if outcome.PreLockHealthResult != nil {
+		writeHealthResult(stdout, "pre-lock health", outcome.PreLockHealthResult)
+	}
+	if outcome.LockAcquired {
+		fmt.Fprintln(stdout, "lock acquired")
+	}
+	if len(outcome.PostLockDetectorResults) > 0 {
+		fmt.Fprintln(stdout, "post-lock detector evaluations:")
+		writeDetectorResults(stdout, outcome.PostLockDetectorResults)
+	}
+	if outcome.PostLockHealthResult != nil {
+		writeHealthResult(stdout, "post-lock health", outcome.PostLockHealthResult)
+	}
+	fmt.Fprintf(stdout, "outcome: %s - %s\n", outcome.Status, outcome.Message)
+	if len(outcome.Command) > 0 {
+		fmt.Fprintf(stdout, "planned reboot command: %s\n", strings.Join(outcome.Command, " "))
+	}
+	if outcome.DryRun {
+		fmt.Fprintln(stdout, "dry-run enabled: reboot command not executed")
+	}
+}
+
+type trackingExecutor struct {
+	delegate orchestrator.CommandExecutor
+	executed bool
+}
+
+func (t *trackingExecutor) Execute(ctx context.Context, command []string) error {
+	if err := t.delegate.Execute(ctx, command); err != nil {
+		return err
+	}
+	t.executed = true
+	return nil
 }
 
 func buildEtcdTLSConfig(cfg *config.EtcdTLSConfig) (*tls.Config, error) {

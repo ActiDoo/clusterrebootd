@@ -102,7 +102,7 @@ lock_ttl_sec: 120
 	}
 
 	var stdout, stderr bytes.Buffer
-	exitCode := commandRunWithWriters([]string{"--config", configPath}, &stdout, &stderr)
+        exitCode := commandRunWithWriters([]string{"--config", configPath, "--once"}, &stdout, &stderr)
 	if exitCode != exitOK {
 		t.Fatalf("expected exitOK, got %d (stderr: %s)", exitCode, stderr.String())
 	}
@@ -149,7 +149,7 @@ lock_ttl_sec: 120
 	}
 
 	var stdout, stderr bytes.Buffer
-	exitCode := commandRunWithWriters([]string{"--config", configPath, "--dry-run"}, &stdout, &stderr)
+        exitCode := commandRunWithWriters([]string{"--config", configPath, "--dry-run", "--once"}, &stdout, &stderr)
 	if exitCode != exitOK {
 		t.Fatalf("expected exitOK for dry-run, got %d (stderr: %s)", exitCode, stderr.String())
 	}

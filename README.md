@@ -71,15 +71,14 @@ The CLI currently offers early validation and introspection helpers:
 - `reboot-coordinator version`
   Prints the build version string.
 - `reboot-coordinator run`
-  Executes a single orchestration pass: evaluates detectors, runs the health
-  script, attempts to acquire the distributed lock, and reports whether a
-  reboot would be triggered.  The current build stops short of executing the
-  reboot command, even when prerequisites are satisfied, to keep the loop
-  safe while the reboot executor is implemented.
+  Starts the long-running orchestration loop.  The daemon continuously
+  evaluates detectors, re-runs the health gate, and executes the configured
+  reboot command once all safeguards succeed.  Pass `--once` to execute a
+  single diagnostic pass without invoking the reboot command.
 
-Future milestones will add the long-running coordinator loop, integration with
-etcd locking, systemd units, packaging, observability, and the full CI/CD
-pipeline described in the PRD.
+Future milestones will extend the loop with structured logging, observability
+integrations, packaging assets, and the full CI/CD pipeline described in the
+PRD.
 
 ## Development Philosophy
 
