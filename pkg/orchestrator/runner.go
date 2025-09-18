@@ -13,6 +13,7 @@ import (
 	"github.com/clusterrebootd/clusterrebootd/pkg/detector"
 	"github.com/clusterrebootd/clusterrebootd/pkg/health"
 	"github.com/clusterrebootd/clusterrebootd/pkg/lock"
+	"github.com/clusterrebootd/clusterrebootd/pkg/observability"
 )
 
 // DetectorEvaluator abstracts the detector engine for orchestration.
@@ -61,6 +62,7 @@ type Runner struct {
 	sleep          func(time.Duration)
 	rnd            *rand.Rand
 	maxLockTries   int
+	reporter       Reporter
 }
 
 // Option configures a Runner.
@@ -96,6 +98,15 @@ func WithMaxLockAttempts(n int) Option {
 	}
 }
 
+// WithReporter attaches an observability reporter to the runner.
+func WithReporter(rep Reporter) Option {
+	return func(r *Runner) {
+		if rep != nil {
+			r.reporter = rep
+		}
+	}
+}
+
 // NewRunner constructs a Runner with the provided dependencies.
 func NewRunner(cfg *config.Config, detectors DetectorEvaluator, healthRunner HealthRunner, locker lock.Manager, opts ...Option) (*Runner, error) {
 	if cfg == nil {
@@ -121,6 +132,7 @@ func NewRunner(cfg *config.Config, detectors DetectorEvaluator, healthRunner Hea
 		sleep:          time.Sleep,
 		rnd:            rand.New(rand.NewSource(time.Now().UnixNano())),
 		maxLockTries:   5,
+		reporter:       NoopReporter{},
 	}
 
 	for _, opt := range opts {
@@ -139,6 +151,9 @@ func NewRunner(cfg *config.Config, detectors DetectorEvaluator, healthRunner Hea
 	if runner.maxLockTries <= 0 {
 		runner.maxLockTries = 5
 	}
+	if runner.reporter == nil {
+		runner.reporter = NoopReporter{}
+	}
 
 	return runner, nil
 }
@@ -149,9 +164,16 @@ func (r *Runner) RunOnce(ctx context.Context) (out Outcome, err error) {
 		ctx = context.Background()
 	}
 
-	killActive, err := r.checkKill(r.killSwitchPath)
-	if err != nil {
-		return out, fmt.Errorf("check kill switch: %w", err)
+	defer func() {
+		if err == nil && out.Status != "" {
+			r.recordOutcome(ctx, out)
+		}
+	}()
+
+	killActive, checkErr := r.checkKill(r.killSwitchPath)
+	r.recordKillSwitch(ctx, "pre-lock", killActive, checkErr)
+	if checkErr != nil {
+		return out, fmt.Errorf("check kill switch: %w", checkErr)
 	}
 	if killActive {
 		out.Status = OutcomeKillSwitch
@@ -159,10 +181,10 @@ func (r *Runner) RunOnce(ctx context.Context) (out Outcome, err error) {
 		return out, nil
 	}
 
-	requires, results, err := r.detectors.Evaluate(ctx)
+	requires, results, evalErr := r.evaluateDetectorsWithObservability(ctx, "pre-lock")
 	out.DetectorResults = results
-	if err != nil {
-		return out, fmt.Errorf("detector evaluation: %w", err)
+	if evalErr != nil {
+		return out, fmt.Errorf("detector evaluation: %w", evalErr)
 	}
 	if !requires {
 		out.Status = OutcomeNoAction
@@ -170,13 +192,10 @@ func (r *Runner) RunOnce(ctx context.Context) (out Outcome, err error) {
 		return out, nil
 	}
 
-	preHealth, err := r.health.Run(ctx, map[string]string{
-		"RC_PHASE":     "pre-lock",
-		"RC_NODE_NAME": r.cfg.NodeName,
-	})
+	preHealth, healthErr := r.runHealthWithObservability(ctx, "pre-lock")
 	out.PreLockHealthResult = &preHealth
-	if err != nil {
-		return out, fmt.Errorf("pre-lock health check: %w", err)
+	if healthErr != nil {
+		return out, fmt.Errorf("pre-lock health check: %w", healthErr)
 	}
 	if preHealth.ExitCode != 0 {
 		out.Status = OutcomeHealthBlocked
@@ -195,17 +214,12 @@ func (r *Runner) RunOnce(ctx context.Context) (out Outcome, err error) {
 	}
 	out.LockAcquired = true
 
-	defer func() {
-		releaseCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		defer cancel()
-		if releaseErr := lease.Release(releaseCtx); releaseErr != nil && err == nil {
-			err = fmt.Errorf("release lock: %w", releaseErr)
-		}
-	}()
+	defer r.releaseLease(lease, &err)
 
-	killActive, err = r.checkKill(r.killSwitchPath)
-	if err != nil {
-		return out, fmt.Errorf("check kill switch after lock: %w", err)
+	killActive, checkErr = r.checkKill(r.killSwitchPath)
+	r.recordKillSwitch(ctx, "post-lock", killActive, checkErr)
+	if checkErr != nil {
+		return out, fmt.Errorf("check kill switch after lock: %w", checkErr)
 	}
 	if killActive {
 		out.Status = OutcomeKillSwitch
@@ -213,10 +227,10 @@ func (r *Runner) RunOnce(ctx context.Context) (out Outcome, err error) {
 		return out, nil
 	}
 
-	requires, postResults, err := r.detectors.Evaluate(ctx)
+	requires, postResults, evalErr := r.evaluateDetectorsWithObservability(ctx, "post-lock")
 	out.PostLockDetectorResults = postResults
-	if err != nil {
-		return out, fmt.Errorf("post-lock detector evaluation: %w", err)
+	if evalErr != nil {
+		return out, fmt.Errorf("post-lock detector evaluation: %w", evalErr)
 	}
 	if !requires {
 		out.Status = OutcomeRecheckCleared
@@ -224,13 +238,10 @@ func (r *Runner) RunOnce(ctx context.Context) (out Outcome, err error) {
 		return out, nil
 	}
 
-	postHealth, err := r.health.Run(ctx, map[string]string{
-		"RC_PHASE":     "post-lock",
-		"RC_NODE_NAME": r.cfg.NodeName,
-	})
+	postHealth, healthErr := r.runHealthWithObservability(ctx, "post-lock")
 	out.PostLockHealthResult = &postHealth
-	if err != nil {
-		return out, fmt.Errorf("post-lock health check: %w", err)
+	if healthErr != nil {
+		return out, fmt.Errorf("post-lock health check: %w", healthErr)
 	}
 	if postHealth.ExitCode != 0 {
 		out.Status = OutcomeHealthBlocked
@@ -243,7 +254,7 @@ func (r *Runner) RunOnce(ctx context.Context) (out Outcome, err error) {
 	out.DryRun = r.cfg.DryRun
 	out.Command = append([]string(nil), r.cfg.RebootCommand...)
 
-	return out, err
+	return out, nil
 }
 
 func (r *Runner) acquireLock(ctx context.Context) (lock.Lease, bool, error) {
@@ -255,27 +266,41 @@ func (r *Runner) acquireLock(ctx context.Context) (lock.Lease, bool, error) {
 		maxBackoff = minBackoff
 	}
 
+	start := time.Now()
 	var lastDelay time.Duration
+
 	for attempt := 0; attempt < r.maxLockTries; attempt++ {
+		attemptStart := time.Now()
 		lease, err := r.locker.Acquire(ctx)
-		if err == nil {
+		duration := time.Since(attemptStart)
+
+		switch {
+		case err == nil:
+			r.recordLockAttempt(ctx, attempt, duration, "success", nil)
+			r.recordLockAcquired(ctx, attempt, time.Since(start))
 			return lease, true, nil
-		}
-		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		case errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded):
+			r.recordLockAttempt(ctx, attempt, duration, "canceled", err)
 			return nil, false, err
-		}
-		if !errors.Is(err, lock.ErrNotAcquired) {
+		case errors.Is(err, lock.ErrNotAcquired):
+			r.recordLockAttempt(ctx, attempt, duration, "contended", err)
+			if attempt == r.maxLockTries-1 {
+				r.recordLockFailure(ctx, attempt+1)
+				return nil, false, nil
+			}
+		default:
+			r.recordLockAttempt(ctx, attempt, duration, "error", err)
 			return nil, false, fmt.Errorf("acquire lock: %w", err)
 		}
-		if attempt == r.maxLockTries-1 {
-			return nil, false, nil
-		}
+
 		delay := r.nextBackoffDelay(attempt, minBackoff, maxBackoff)
 		lastDelay = delay
+		r.recordLockBackoff(ctx, attempt, delay)
 		if err := r.sleepWithContext(ctx, delay); err != nil {
 			return nil, false, err
 		}
 	}
+	r.recordLockFailure(ctx, r.maxLockTries)
 	return nil, false, fmt.Errorf("failed to acquire lock after %d attempts (last delay %s)", r.maxLockTries, lastDelay)
 }
 
@@ -330,4 +355,317 @@ func defaultKillSwitchCheck(path string) (bool, error) {
 		return false, err
 	}
 	return true, nil
+}
+
+func (r *Runner) evaluateDetectorsWithObservability(ctx context.Context, phase string) (bool, []detector.Result, error) {
+	start := time.Now()
+	requires, results, err := r.detectors.Evaluate(ctx)
+	r.recordDetectorEvaluation(ctx, phase, time.Since(start), requires, results, err)
+	return requires, results, err
+}
+
+func (r *Runner) runHealthWithObservability(ctx context.Context, phase string) (health.Result, error) {
+	env := map[string]string{
+		"RC_PHASE":     phase,
+		"RC_NODE_NAME": r.cfg.NodeName,
+	}
+	start := time.Now()
+	res, err := r.health.Run(ctx, env)
+	r.recordHealth(ctx, phase, time.Since(start), res, err)
+	return res, err
+}
+
+func (r *Runner) recordKillSwitch(ctx context.Context, stage string, active bool, checkErr error) {
+	result := "inactive"
+	level := observability.LevelInfo
+	fields := map[string]interface{}{
+		"stage":  stage,
+		"active": active,
+	}
+
+	if checkErr != nil {
+		result = "error"
+		level = observability.LevelError
+		fields["error"] = checkErr.Error()
+	} else if active {
+		result = "active"
+		level = observability.LevelWarn
+	}
+
+	r.reporter.RecordMetric(observability.Metric{
+		Name:        "kill_switch_checks_total",
+		Type:        observability.MetricCounter,
+		Value:       1,
+		Labels:      map[string]string{"stage": stage, "result": result},
+		Description: "Number of kill switch evaluations grouped by stage and result.",
+	})
+
+	r.reporter.RecordEvent(ctx, observability.Event{
+		Level:  level,
+		Node:   r.cfg.NodeName,
+		Event:  "kill_switch",
+		Fields: fields,
+	})
+}
+
+func (r *Runner) recordDetectorEvaluation(ctx context.Context, phase string, duration time.Duration, requires bool, results []detector.Result, evalErr error) {
+	outcome := "clear"
+	level := observability.LevelInfo
+	fields := map[string]interface{}{
+		"phase":              phase,
+		"duration_ms":        duration.Milliseconds(),
+		"requires_reboot":    requires,
+		"detector_summaries": summariseDetectorResults(results),
+	}
+
+	if evalErr != nil {
+		outcome = "error"
+		level = observability.LevelError
+		fields["error"] = evalErr.Error()
+	} else if requires {
+		outcome = "requires"
+	}
+
+	r.reporter.RecordMetric(observability.Metric{
+		Name:        "detector_evaluations_total",
+		Type:        observability.MetricCounter,
+		Value:       1,
+		Labels:      map[string]string{"phase": phase, "result": outcome},
+		Description: "Number of detector evaluations grouped by phase and result.",
+	})
+	r.reporter.RecordMetric(observability.Metric{
+		Name:        "detector_evaluation_seconds",
+		Type:        observability.MetricHistogram,
+		Value:       duration.Seconds(),
+		Labels:      map[string]string{"phase": phase, "result": outcome},
+		Description: "Latency of detector evaluations.",
+		Unit:        "seconds",
+	})
+
+	r.reporter.RecordEvent(ctx, observability.Event{
+		Level:  level,
+		Node:   r.cfg.NodeName,
+		Event:  "detectors_evaluated",
+		Fields: fields,
+	})
+}
+
+func summariseDetectorResults(results []detector.Result) []map[string]interface{} {
+	summaries := make([]map[string]interface{}, 0, len(results))
+	for _, res := range results {
+		summary := map[string]interface{}{
+			"name":        res.Name,
+			"requires":    res.RequiresReboot,
+			"duration_ms": res.Duration.Milliseconds(),
+		}
+		if res.Err != nil {
+			summary["error"] = res.Err.Error()
+		}
+		if res.CommandOutput != nil {
+			summary["exit_code"] = res.CommandOutput.ExitCode
+		}
+		summaries = append(summaries, summary)
+	}
+	return summaries
+}
+
+func (r *Runner) recordHealth(ctx context.Context, phase string, duration time.Duration, res health.Result, runErr error) {
+	status := "pass"
+	level := observability.LevelInfo
+	fields := map[string]interface{}{
+		"phase":       phase,
+		"duration_ms": duration.Milliseconds(),
+	}
+
+	if runErr != nil {
+		status = "error"
+		level = observability.LevelError
+		fields["error"] = runErr.Error()
+	} else {
+		fields["exit_code"] = res.ExitCode
+		if res.ExitCode != 0 {
+			status = "blocked"
+			level = observability.LevelWarn
+		}
+	}
+
+	r.reporter.RecordMetric(observability.Metric{
+		Name:        "health_checks_total",
+		Type:        observability.MetricCounter,
+		Value:       1,
+		Labels:      map[string]string{"phase": phase, "result": status},
+		Description: "Number of health script executions grouped by phase and result.",
+	})
+	r.reporter.RecordMetric(observability.Metric{
+		Name:        "health_check_seconds",
+		Type:        observability.MetricHistogram,
+		Value:       duration.Seconds(),
+		Labels:      map[string]string{"phase": phase, "result": status},
+		Description: "Execution time of the health script.",
+		Unit:        "seconds",
+	})
+
+	r.reporter.RecordEvent(ctx, observability.Event{
+		Level:  level,
+		Node:   r.cfg.NodeName,
+		Event:  "health_check",
+		Fields: fields,
+	})
+}
+
+func (r *Runner) recordLockAttempt(ctx context.Context, attempt int, duration time.Duration, result string, attemptErr error) {
+	labels := map[string]string{"result": result}
+	fields := map[string]interface{}{
+		"attempt":     attempt + 1,
+		"result":      result,
+		"duration_ms": duration.Milliseconds(),
+	}
+	level := observability.LevelInfo
+
+	switch result {
+	case "contended":
+		level = observability.LevelWarn
+	case "error", "canceled":
+		level = observability.LevelError
+	}
+
+	if attemptErr != nil {
+		fields["error"] = attemptErr.Error()
+	}
+
+	r.reporter.RecordMetric(observability.Metric{
+		Name:        "lock_attempts_total",
+		Type:        observability.MetricCounter,
+		Value:       1,
+		Labels:      labels,
+		Description: "Number of lock acquisition attempts grouped by result.",
+	})
+	r.reporter.RecordMetric(observability.Metric{
+		Name:        "lock_acquire_seconds",
+		Type:        observability.MetricHistogram,
+		Value:       duration.Seconds(),
+		Labels:      labels,
+		Description: "Duration of individual lock acquisition attempts.",
+		Unit:        "seconds",
+	})
+
+	r.reporter.RecordEvent(ctx, observability.Event{
+		Level:  level,
+		Node:   r.cfg.NodeName,
+		Event:  "lock_attempt",
+		Fields: fields,
+	})
+}
+
+func (r *Runner) recordLockBackoff(ctx context.Context, attempt int, delay time.Duration) {
+	r.reporter.RecordEvent(ctx, observability.Event{
+		Level: observability.LevelInfo,
+		Node:  r.cfg.NodeName,
+		Event: "lock_backoff",
+		Fields: map[string]interface{}{
+			"attempt":  attempt + 1,
+			"delay_ms": delay.Milliseconds(),
+		},
+	})
+}
+
+func (r *Runner) recordLockAcquired(ctx context.Context, attempt int, wait time.Duration) {
+	r.reporter.RecordEvent(ctx, observability.Event{
+		Level: observability.LevelInfo,
+		Node:  r.cfg.NodeName,
+		Event: "lock_acquired",
+		Fields: map[string]interface{}{
+			"attempt": attempt + 1,
+			"wait_ms": wait.Milliseconds(),
+		},
+	})
+}
+
+func (r *Runner) recordLockFailure(ctx context.Context, attempts int) {
+	r.reporter.RecordEvent(ctx, observability.Event{
+		Level: observability.LevelWarn,
+		Node:  r.cfg.NodeName,
+		Event: "lock_failed",
+		Fields: map[string]interface{}{
+			"attempts": attempts,
+		},
+	})
+}
+
+func (r *Runner) releaseLease(lease lock.Lease, errPtr *error) {
+	if lease == nil {
+		return
+	}
+	releaseCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	start := time.Now()
+	releaseErr := lease.Release(releaseCtx)
+	duration := time.Since(start)
+
+	result := "success"
+	level := observability.LevelInfo
+	if releaseErr != nil {
+		result = "error"
+		level = observability.LevelWarn
+	}
+
+	r.reporter.RecordMetric(observability.Metric{
+		Name:        "lock_release_seconds",
+		Type:        observability.MetricHistogram,
+		Value:       duration.Seconds(),
+		Labels:      map[string]string{"result": result},
+		Description: "Duration of lock release operations.",
+		Unit:        "seconds",
+	})
+
+	r.reporter.RecordEvent(context.Background(), observability.Event{
+		Level:  level,
+		Node:   r.cfg.NodeName,
+		Event:  "lock_released",
+		Fields: map[string]interface{}{"result": result, "duration_ms": duration.Milliseconds()},
+	})
+
+	if releaseErr != nil && errPtr != nil && *errPtr == nil {
+		*errPtr = fmt.Errorf("release lock: %w", releaseErr)
+	}
+}
+
+func (r *Runner) recordOutcome(ctx context.Context, out Outcome) {
+	if out.Status == "" {
+		return
+	}
+
+	level := observability.LevelInfo
+	switch out.Status {
+	case OutcomeKillSwitch, OutcomeHealthBlocked, OutcomeLockUnavailable:
+		level = observability.LevelWarn
+	}
+
+	fields := map[string]interface{}{
+		"status":        out.Status,
+		"dry_run":       out.DryRun,
+		"lock_acquired": out.LockAcquired,
+	}
+	if out.Message != "" {
+		fields["message"] = out.Message
+	}
+	if len(out.Command) > 0 {
+		fields["command"] = strings.Join(out.Command, " ")
+	}
+
+	r.reporter.RecordMetric(observability.Metric{
+		Name:        "orchestration_outcomes_total",
+		Type:        observability.MetricCounter,
+		Value:       1,
+		Labels:      map[string]string{"status": string(out.Status)},
+		Description: "Number of orchestration passes grouped by outcome status.",
+	})
+
+	r.reporter.RecordEvent(ctx, observability.Event{
+		Level:  level,
+		Node:   r.cfg.NodeName,
+		Event:  "run_outcome",
+		Fields: fields,
+	})
 }

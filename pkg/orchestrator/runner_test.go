@@ -12,6 +12,7 @@ import (
 	"github.com/clusterrebootd/clusterrebootd/pkg/detector"
 	"github.com/clusterrebootd/clusterrebootd/pkg/health"
 	"github.com/clusterrebootd/clusterrebootd/pkg/lock"
+	"github.com/clusterrebootd/clusterrebootd/pkg/observability"
 )
 
 type evalStep struct {
@@ -400,5 +401,75 @@ func TestRunnerKillSwitchAfterLock(t *testing.T) {
 	}
 	if !lease.released {
 		t.Fatal("expected lease released when kill switch activates post-lock")
+	}
+}
+
+func TestRunnerEmitsObservabilitySignals(t *testing.T) {
+	cfg := baseConfig()
+	lease := &fakeLease{}
+	engine := &fakeEngine{steps: []evalStep{{requires: true}, {requires: true}}}
+	healthRunner := &fakeHealth{steps: []healthStep{{result: health.Result{ExitCode: 0}}, {result: health.Result{ExitCode: 0}}}}
+	locker := &fakeLocker{outcomes: []acquireOutcome{{lease: lease}}}
+
+	var events []observability.Event
+	var metrics []observability.Metric
+	reporter := ReporterFuncs{
+		OnEvent: func(_ context.Context, event observability.Event) {
+			events = append(events, event)
+		},
+		OnMetric: func(metric observability.Metric) {
+			metrics = append(metrics, metric)
+		},
+	}
+
+	runner, err := NewRunner(cfg, engine, healthRunner, locker, WithReporter(reporter))
+	if err != nil {
+		t.Fatalf("failed to create runner: %v", err)
+	}
+
+	outcome, err := runner.RunOnce(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if outcome.Status != OutcomeReady {
+		t.Fatalf("expected ready outcome, got %s", outcome.Status)
+	}
+
+	if len(events) == 0 {
+		t.Fatal("expected observability events to be recorded")
+	}
+
+	var outcomeEventFound bool
+	for _, event := range events {
+		if event.Event == "run_outcome" {
+			outcomeEventFound = true
+			if status, ok := event.Fields["status"].(OutcomeStatus); ok {
+				if status != OutcomeReady {
+					t.Fatalf("unexpected outcome status in event: %v", status)
+				}
+			} else if statusStr, ok := event.Fields["status"].(string); ok {
+				if statusStr != string(OutcomeReady) {
+					t.Fatalf("unexpected outcome status string in event: %s", statusStr)
+				}
+			} else {
+				t.Fatalf("status field missing in outcome event: %v", event.Fields)
+			}
+		}
+	}
+	if !outcomeEventFound {
+		t.Fatalf("expected run_outcome event among %d events", len(events))
+	}
+
+	var outcomeMetricFound bool
+	for _, metric := range metrics {
+		if metric.Name == "orchestration_outcomes_total" {
+			outcomeMetricFound = true
+			if metric.Labels["status"] != string(OutcomeReady) {
+				t.Fatalf("unexpected status label on outcome metric: %v", metric.Labels)
+			}
+		}
+	}
+	if !outcomeMetricFound {
+		t.Fatalf("expected orchestration_outcomes_total metric among %d metrics", len(metrics))
 	}
 }
