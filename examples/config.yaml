@@ -1,0 +1,62 @@
+# Example configuration for the Cluster Reboot Coordinator.
+# Copy this file and adjust endpoints, paths, and policies for your environment.
+
+node_name: node-a
+
+reboot_required_detectors:
+  # Debian/Ubuntu marker file published by unattended-upgrades.
+  - name: debian-reboot-required
+    type: file
+    path: /var/run/reboot-required
+
+  # RHEL-family utility that signals a reboot is required when it exits with 1.
+  - name: rpm-needs-restarting
+    type: command
+    cmd: ["/usr/sbin/needs-restarting", "-r"]
+    success_exit_codes: [1]
+    timeout_sec: 10
+
+health_script: /usr/local/bin/cluster-health-check.sh
+health_timeout_sec: 45
+check_interval_sec: 300
+backoff_min_sec: 5
+backoff_max_sec: 60
+
+# Global kill switch that operators can create to block reboots quickly.
+kill_switch_file: /etc/reboot-coordinator/disable
+
+# Distributed lock guarding concurrent reboots.
+etcd_endpoints:
+  - 10.0.0.10:2379
+  - 10.0.0.11:2379
+  - 10.0.0.12:2379
+etcd_namespace: /prod/reboot-coordinator
+lock_key: /prod/reboot-coordinator/lock
+lock_ttl_sec: 120
+
+# Enable mutual TLS when connecting to etcd.
+etcd_tls:
+  enabled: true
+  ca_file: /etc/ssl/etcd/ca.crt
+  cert_file: /etc/ssl/etcd/node.crt
+  key_file: /etc/ssl/etcd/node.key
+  insecure_skip_verify: false
+
+# Command executed after all gates succeed.
+reboot_command:
+  - /sbin/shutdown
+  - -r
+  - now
+  - "coordinated reboot for ${RC_NODE_NAME}"
+
+cluster_policies:
+  min_healthy_fraction: 0.6
+  min_healthy_absolute: 3
+  forbid_if_only_fallback_left: true
+  fallback_nodes:
+    - control-plane-a
+    - control-plane-b
+
+metrics:
+  enabled: true
+  listen: 0.0.0.0:9090
