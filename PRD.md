@@ -44,8 +44,8 @@
 * **Distros (x86\_64/arm64):**
 
   * Ubuntu 20.04/22.04/24.04 (deb)
-  * Debian 11/12 (deb)
-  * RHEL 8/9, AlmaLinux 8/9, Rocky 8/9 (rpm)
+  * Debian 11/12/13 (deb)
+  * RHEL 9/10, AlmaLinux 9/10, Rocky 9/10 (rpm)
   * (Optional) SLES 15 SPx / openSUSE Leap (rpm)
 * **etcd v3** Cluster (mind. 3 Knoten), TLS empfohlen
 * Systemd ≥ 245
