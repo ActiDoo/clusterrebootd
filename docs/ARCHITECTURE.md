@@ -109,10 +109,13 @@ if the process dies.
 
 ## Observability & Security
 
-- **Logging** – JSON structured logs containing timestamps, node identity,
-  detector names, exit codes, lock attempt durations, and health script output.
-- **Metrics** – Prometheus `/metrics` endpoint reporting counters (reboots,
-  blocked actions) and histograms (lock acquisition times).
+- **Logging** – The CLI wires the orchestrator reporter into a JSON logger that
+  emits structured events (timestamps, node identity, detector summaries,
+  health script output) to stderr for consumption by journald or log shippers.
+- **Metrics** – A built-in Prometheus `/metrics` endpoint reports counters
+  (reboots, blocked actions) and histograms (lock acquisition times); when
+  enabled the listener address is exported via `RC_METRICS_ENDPOINT` for health
+  scripts and probes.
 - **Security** – TLS mutual auth for etcd, restricted RBAC prefix, SBOM &
   signature generation during packaging.
 

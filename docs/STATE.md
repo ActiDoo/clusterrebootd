@@ -13,19 +13,15 @@
   single-pass flow for smoke tests.
 - A reproducible dev container (Go 1.22 with etcd 3.6.4) is available for local
   development and integration testing.
-- Observability scaffolding emits structured events and metric observations via a
-  pluggable reporter so logs and counters can be wired into future sinks without
-  touching orchestration logic.
+- CLI run mode now wires the reporter into a JSON logger on stderr and an
+  optional Prometheus metrics listener, exporting the address to the health
+  script environment for runtime validation.
 
 ## Next Up
-- Harden the loop with graceful error handling (transient retry strategy,
-  signal-aware shutdown) and document operational guidance for running it as a
-  daemon.
-- Wire the reporter into concrete sinks (JSON logs, Prometheus collectors) and
-  expose the metrics endpoint described in the PRD.
+- Harden the loop with graceful error handling (transient retry strategy and
+  richer documentation on operational runbooks).
 
 ## Backlog
-- Build observability surfaces (JSON logging defaults, Prometheus collectors).
 - Add systemd service files and packaging assets for deb/rpm targets.
 - Establish CI/CD workflows covering linting, tests, packaging, SBOM, and signing.
 - Provide example configuration files and operator documentation.
