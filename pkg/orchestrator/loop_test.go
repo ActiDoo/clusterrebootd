@@ -101,21 +101,6 @@ func TestLoopStopsOnDryRunReady(t *testing.T) {
 	}
 }
 
-func TestLoopReturnsRunnerError(t *testing.T) {
-	cfg := baseConfig()
-	runner := &fakeLoopRunner{steps: []loopStep{{err: errors.New("boom")}}}
-	executor := &fakeExecutor{}
-
-	loop, err := NewLoop(cfg, runner, executor)
-	if err != nil {
-		t.Fatalf("failed to create loop: %v", err)
-	}
-
-	if err := loop.Run(context.Background()); err == nil {
-		t.Fatal("expected error from loop when runner fails")
-	}
-}
-
 func TestLoopRespectsContextCancellation(t *testing.T) {
 	cfg := baseConfig()
 	runner := &fakeLoopRunner{steps: []loopStep{{outcome: Outcome{Status: OutcomeNoAction}}}}
@@ -131,6 +116,96 @@ func TestLoopRespectsContextCancellation(t *testing.T) {
 
 	if err := loop.Run(ctx); !errors.Is(err, context.Canceled) {
 		t.Fatalf("expected context cancellation, got %v", err)
+	}
+}
+
+func TestLoopRetriesOnRunnerError(t *testing.T) {
+	cfg := baseConfig()
+	firstErr := errors.New("boom")
+	runner := &fakeLoopRunner{steps: []loopStep{{err: firstErr}, {outcome: Outcome{Status: OutcomeNoAction}}}}
+	executor := &fakeExecutor{}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	var errCount int
+	loop, err := NewLoop(cfg, runner, executor,
+		WithLoopInterval(0),
+		WithLoopSleepFunc(func(time.Duration) {}),
+		WithLoopErrorHandler(func(runErr error) {
+			errCount++
+			if !errors.Is(runErr, firstErr) {
+				t.Fatalf("unexpected error received by handler: %v", runErr)
+			}
+		}),
+		WithLoopIterationHook(func(out Outcome) {
+			if out.Status == OutcomeNoAction {
+				cancel()
+			}
+		}),
+	)
+	if err != nil {
+		t.Fatalf("failed to create loop: %v", err)
+	}
+
+	if err := loop.Run(ctx); !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected context cancellation, got %v", err)
+	}
+
+	if runner.calls < 2 {
+		t.Fatalf("expected runner to be retried, got %d calls", runner.calls)
+	}
+	if errCount != 1 {
+		t.Fatalf("expected error handler to run once, ran %d times", errCount)
+	}
+}
+
+func TestLoopAppliesErrorBackoff(t *testing.T) {
+	cfg := baseConfig()
+	transient := errors.New("transient")
+	runner := &fakeLoopRunner{steps: []loopStep{{err: transient}, {err: transient}, {outcome: Outcome{Status: OutcomeNoAction}}}}
+	executor := &fakeExecutor{}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	var mu sync.Mutex
+	sleeps := make([]time.Duration, 0)
+
+	loop, err := NewLoop(cfg, runner, executor,
+		WithLoopInterval(0),
+		WithLoopSleepFunc(func(d time.Duration) {
+			mu.Lock()
+			defer mu.Unlock()
+			sleeps = append(sleeps, d)
+		}),
+		WithLoopErrorBackoff(5*time.Millisecond, 20*time.Millisecond),
+		WithLoopErrorHandler(func(error) {}),
+		WithLoopIterationHook(func(out Outcome) {
+			if out.Status == OutcomeNoAction {
+				cancel()
+			}
+		}),
+	)
+	if err != nil {
+		t.Fatalf("failed to create loop: %v", err)
+	}
+
+	if err := loop.Run(ctx); !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected context cancellation, got %v", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+
+	if len(sleeps) < 2 {
+		t.Fatalf("expected at least two sleep intervals, got %v", sleeps)
+	}
+	if sleeps[0] != 5*time.Millisecond {
+		t.Fatalf("expected first backoff to be 5ms, got %v", sleeps[0])
+	}
+	if sleeps[1] != 10*time.Millisecond {
+		t.Fatalf("expected second backoff to double to 10ms, got %v", sleeps[1])
 	}
 }
 

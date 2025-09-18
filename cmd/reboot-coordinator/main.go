@@ -4,12 +4,15 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
 	"os"
+	"os/signal"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/clusterrebootd/clusterrebootd/pkg/config"
@@ -170,19 +173,31 @@ func commandRunWithWriters(args []string, stdout, stderr io.Writer) int {
 	tracker := &trackingExecutor{delegate: orchestrator.NewExecCommandExecutor(nil, nil)}
 	var lastOutcome orchestrator.Outcome
 	iteration := 0
-	loop, err := orchestrator.NewLoop(cfg, runner, tracker, orchestrator.WithLoopIterationHook(func(outcome orchestrator.Outcome) {
-		iteration++
-		fmt.Fprintf(stdout, "iteration %d results:\n", iteration)
-		reportOutcome(stdout, outcome)
-		fmt.Fprintln(stdout)
-		lastOutcome = outcome
-	}))
+	loop, err := orchestrator.NewLoop(cfg, runner, tracker,
+		orchestrator.WithLoopIterationHook(func(outcome orchestrator.Outcome) {
+			iteration++
+			fmt.Fprintf(stdout, "iteration %d results:\n", iteration)
+			reportOutcome(stdout, outcome)
+			fmt.Fprintln(stdout)
+			lastOutcome = outcome
+		}),
+		orchestrator.WithLoopErrorHandler(func(runErr error) {
+			fmt.Fprintf(stderr, "orchestration iteration failed: %v; retrying\n", runErr)
+		}),
+	)
 	if err != nil {
 		fmt.Fprintf(stderr, "failed to initialise orchestration loop: %v\n", err)
 		return exitRunError
 	}
 
-	if err := loop.Run(context.Background()); err != nil {
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	if err := loop.Run(ctx); err != nil {
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			fmt.Fprintln(stdout, "shutdown requested; orchestration loop exiting")
+			return exitOK
+		}
 		fmt.Fprintf(stderr, "orchestration loop error: %v\n", err)
 		return exitRunError
 	}
