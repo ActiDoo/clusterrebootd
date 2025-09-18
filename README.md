@@ -37,6 +37,26 @@ be introduced as the orchestrator matures.
    future iteration) or adapt the PRD sample.  The CLI defaults to
    `/etc/reboot-coordinator/config.yaml` but accepts an explicit `--config` flag.
 
+## Development Container
+
+The repository ships with a [VS Code Dev Container](https://containers.dev/)
+definition under `.devcontainer/`.  It builds on the official Go 1.22 base
+image, upgrades the underlying packages, and installs etcd v3.6.4 so integration
+tests can run against a recent upstream release without additional manual setup.
+
+To use it, open the folder in VS Code and select **Reopen in Container**, or run
+`devcontainer up` from the CLI.  After the container starts you can launch etcd
+locally with:
+
+```bash
+etcd --data-dir /tmp/etcd-data \
+  --listen-client-urls http://0.0.0.0:2379 \
+  --advertise-client-urls http://127.0.0.1:2379
+```
+
+The dev container forwards ports 2379/2380 by default, and `etcdctl` is
+available in the `$PATH` for smoke tests and debugging.
+
 ### CLI Commands
 
 The CLI currently offers early validation and introspection helpers:
