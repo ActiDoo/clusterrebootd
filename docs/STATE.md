@@ -27,6 +27,10 @@
 - A packaging blueprint (`docs/PACKAGING_BLUEPRINT.md`) documents the target
   systemd contract, filesystem layout, and `nfpm` packaging skeleton so
   implementation can proceed without revisiting foundational decisions.
+- An annotated example configuration (`examples/config.yaml`) and README
+  guidance now show how to combine detectors, the health gate, metrics, and
+  etcd TLS so operators have a concrete starting point before broader
+  documentation lands.
 
 ## Next Up
 - Bootstrap the packaging implementation by creating the repository's
@@ -36,9 +40,6 @@
   and decide on the automation platform (e.g. GitHub Actions) so the broader
   pipeline can be implemented incrementally without blocking on high-level
   design questions.
-- Prepare an example configuration file plus accompanying README section that
-  demonstrates detector, health script, and metrics wiring, giving operators a
-  concrete starting point before the full documentation suite lands.
 
 ## Backlog
 - Establish complete CI/CD workflows covering linting, tests, packaging, SBOM,
