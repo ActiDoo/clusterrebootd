@@ -13,13 +13,16 @@
   single-pass flow for smoke tests.
 - A reproducible dev container (Go 1.22 with etcd 3.6.4) is available for local
   development and integration testing.
+- Observability scaffolding emits structured events and metric observations via a
+  pluggable reporter so logs and counters can be wired into future sinks without
+  touching orchestration logic.
 
 ## Next Up
-- Define structured logging fields and metrics scaffolding so the loop can emit
-  observability data once integrated.
 - Harden the loop with graceful error handling (transient retry strategy,
   signal-aware shutdown) and document operational guidance for running it as a
   daemon.
+- Wire the reporter into concrete sinks (JSON logs, Prometheus collectors) and
+  expose the metrics endpoint described in the PRD.
 
 ## Backlog
 - Build observability surfaces (JSON logging defaults, Prometheus collectors).
