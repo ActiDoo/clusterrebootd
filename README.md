@@ -33,9 +33,31 @@ be introduced as the orchestrator matures.
    go test ./...
    ```
 
-3. Create a configuration file (see `examples/config.yaml` to be added in a
-   future iteration) or adapt the PRD sample.  The CLI defaults to
+3. Create a configuration file.  See `examples/config.yaml` for a production-
+   inspired starting point or adapt the PRD sample.  The CLI defaults to
    `/etc/reboot-coordinator/config.yaml` but accepts an explicit `--config` flag.
+
+## Example Configuration
+
+The repository ships an annotated sample at `examples/config.yaml` that
+demonstrates how to wire the implemented features together:
+
+- Two reboot detectors: a Debian/Ubuntu marker file and the RHEL `needs-restarting`
+  command with a guard for its reboot-required exit code.
+- Cluster guardrails: health script location and timeout, an operator-controlled
+  kill switch file, and cluster policy hints (minimum healthy nodes and
+  designated fallback nodes) that are exported to the health script
+  environment.
+- Distributed coordination: three etcd endpoints, an explicit namespace,
+  lock key, and optional mutual TLS credentials.
+- Observability: metrics listener enabled so the daemon injects
+  `RC_METRICS_ENDPOINT` alongside `RC_NODE_NAME`, `RC_LOCK_KEY`,
+  `RC_ETCD_ENDPOINTS`, and `RC_KILL_SWITCH_FILE` into the health script
+  environment.
+
+Copy the file, update endpoints, file paths, and policy thresholds, and then run
+`reboot-coordinator validate-config --config /path/to/config.yaml` to confirm
+the configuration is accepted before rolling it out.
 
 ## Development Container
 

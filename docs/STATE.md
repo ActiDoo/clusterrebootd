@@ -24,6 +24,10 @@
 - CLI run mode now wires the reporter into a JSON logger on stderr and an
   optional Prometheus metrics listener, exporting the address to the health
   script environment for runtime validation.
+- An annotated example configuration (`examples/config.yaml`) and README
+  guidance now show how to combine detectors, the health gate, metrics, and
+  etcd TLS so operators have a concrete starting point before broader
+  documentation lands.
 
 ## Next Up
 - Draft a packaging blueprint covering the systemd unit contract, file layout,
@@ -33,9 +37,6 @@
   and decide on the automation platform (e.g. GitHub Actions) so the broader
   pipeline can be implemented incrementally without blocking on high-level
   design questions.
-- Prepare an example configuration file plus accompanying README section that
-  demonstrates detector, health script, and metrics wiring, giving operators a
-  concrete starting point before the full documentation suite lands.
 
 ## Backlog
 - Implement the systemd service units and full packaging assets for deb/rpm
