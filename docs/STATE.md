@@ -2,16 +2,21 @@
 
 ## Current State
 - Core libraries for configuration parsing/validation, reboot detectors, and the
-  health script runner exist but the orchestrator loop is not yet implemented.
+  health script runner are joined by an orchestrator runner that executes a
+  single reboot pass with detector rechecks, kill-switch handling, and health
+  gating through a pluggable lock manager (currently a no-op implementation).
 - Detector engine aggregates per-detector results with timing and command output
-  to support simulation and future orchestration decisions.
-- CLI offers `validate-config`, `simulate`, and `version`; `run` is a placeholder.
+  to support simulation, orchestration decisions, and CLI reporting.
+- CLI offers `validate-config`, `simulate`, `run`, and `version`; `run`
+  performs the single-pass orchestration flow and reports when a reboot would
+  be triggered while leaving the reboot command execution stubbed for safety.
 - A reproducible dev container (Go 1.22 with etcd 3.6.4) is available for local
   development and integration testing.
 
 ## Next Up
-- Implement the orchestration loop with etcd locking, detector rechecks, and health
-  gate enforcement as described in `docs/ARCHITECTURE.md`.
+- Implement an etcd-backed lock manager and evolve the runner into the
+  long-lived orchestration loop, including an execution path for the reboot
+  command once safeguards are fully in place.
 - Define structured logging fields and metrics scaffolding so the loop can emit
   observability data once integrated.
 
