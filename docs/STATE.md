@@ -6,6 +6,8 @@
 - Detector engine aggregates per-detector results with timing and command output
   to support simulation and future orchestration decisions.
 - CLI offers `validate-config`, `simulate`, and `version`; `run` is a placeholder.
+- A reproducible dev container (Go 1.22 with etcd 3.6.4) is available for local
+  development and integration testing.
 
 ## Next Up
 - Implement the orchestration loop with etcd locking, detector rechecks, and health
