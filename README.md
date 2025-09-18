@@ -68,6 +68,10 @@ The CLI currently offers early validation and introspection helpers:
   Loads the configuration, instantiates detectors, executes them once, and
   prints a summary with per-detector results without interacting with etcd or
   rebooting the host.
+- `reboot-coordinator status --config /path/to/config.yaml`
+  Runs a dry-run orchestration pass that evaluates detectors, executes the
+  health script, and attempts to acquire the etcd lock once, reporting the
+  resulting outcome without invoking the reboot command.
 - `reboot-coordinator version`
   Prints the build version string.
 - `reboot-coordinator run`

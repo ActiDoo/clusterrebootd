@@ -11,6 +11,9 @@
 - CLI offers `validate-config`, `simulate`, `run`, and `version`; `run` now drives
   the long-lived orchestration loop while `--once` preserves the diagnostic
   single-pass flow for smoke tests.
+- CLI also provides a `status` command that reuses the orchestrator runner in
+  enforced dry-run mode to report detector, health, and lock readiness without
+  triggering a reboot.
 - The orchestration loop now retries transient runtime failures with an
   exponential backoff and listens for SIGINT/SIGTERM so operators can stop the
   daemon cleanly when managed by service supervisors.
@@ -21,7 +24,8 @@
   script environment for runtime validation.
 
 ## Next Up
-- (to be filled)
+- Add optional flags to the `status` command to allow skipping the health
+  script or etcd lock attempts for quicker offline diagnostics.
 
 ## Backlog
 - Add systemd service files and packaging assets for deb/rpm targets.

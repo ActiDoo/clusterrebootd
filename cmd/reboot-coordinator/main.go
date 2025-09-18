@@ -27,12 +27,11 @@ import (
 )
 
 const (
-	exitOK             = 0
-	exitUsage          = 64
-	exitConfigError    = 65
-	exitNotImplemented = 66
-	exitDetectorError  = 67
-	exitRunError       = 68
+	exitOK            = 0
+	exitUsage         = 64
+	exitConfigError   = 65
+	exitDetectorError = 67
+	exitRunError      = 68
 )
 
 func main() {
@@ -54,8 +53,7 @@ func run(args []string) int {
 	case "simulate":
 		return commandSimulate(args[1:])
 	case "status":
-		fmt.Fprintln(os.Stderr, "status command is not implemented yet")
-		return exitNotImplemented
+		return commandStatus(args[1:])
 	case "version":
 		fmt.Println(version.Version)
 		return exitOK
@@ -115,19 +113,7 @@ func commandRunWithWriters(args []string, stdout, stderr io.Writer) int {
 		return exitConfigError
 	}
 
-	baseEnv := map[string]string{
-		"RC_NODE_NAME": cfg.NodeName,
-		"RC_DRY_RUN":   strconv.FormatBool(cfg.DryRun),
-	}
-	if cfg.LockKey != "" {
-		baseEnv["RC_LOCK_KEY"] = cfg.LockKey
-	}
-	if len(cfg.EtcdEndpoints) > 0 {
-		baseEnv["RC_ETCD_ENDPOINTS"] = strings.Join(cfg.EtcdEndpoints, ",")
-	}
-	if cfg.KillSwitchFile != "" {
-		baseEnv["RC_KILL_SWITCH_FILE"] = cfg.KillSwitchFile
-	}
+	baseEnv := buildBaseEnvironment(cfg)
 
 	tlsConfig, err := buildEtcdTLSConfig(cfg.EtcdTLS)
 	if err != nil {
@@ -244,9 +230,6 @@ func commandRunWithWriters(args []string, stdout, stderr io.Writer) int {
 		return exitRunError
 	}
 
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
-
 	if err := loop.Run(ctx); err != nil {
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 			fmt.Fprintln(stdout, "shutdown requested; orchestration loop exiting")
@@ -265,6 +248,108 @@ func commandRunWithWriters(args []string, stdout, stderr io.Writer) int {
 	}
 
 	return exitOK
+}
+
+func commandStatus(args []string) int {
+	return commandStatusWithWriters(args, os.Stdout, os.Stderr)
+}
+
+func commandStatusWithWriters(args []string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("status", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	configPath := fs.String("config", config.DefaultConfigPath, "path to configuration file")
+	if err := fs.Parse(args); err != nil {
+		return exitUsage
+	}
+
+	cfg, err := config.Load(*configPath)
+	if err != nil {
+		fmt.Fprintf(stderr, "failed to load configuration: %v\n", err)
+		return exitConfigError
+	}
+
+	cfgCopy := *cfg
+	cfgCopy.DryRun = true
+
+	detectors, err := detector.NewAll(cfgCopy.RebootRequiredDetectors)
+	if err != nil {
+		fmt.Fprintf(stderr, "failed to construct detectors: %v\n", err)
+		return exitConfigError
+	}
+
+	engine, err := detector.NewEngine(detectors)
+	if err != nil {
+		fmt.Fprintf(stderr, "failed to initialise detector engine: %v\n", err)
+		return exitConfigError
+	}
+
+	baseEnv := buildBaseEnvironment(&cfgCopy)
+
+	healthRunner, err := health.NewScriptRunner(cfgCopy.HealthScript, cfgCopy.HealthTimeout(), baseEnv)
+	if err != nil {
+		fmt.Fprintf(stderr, "failed to construct health runner: %v\n", err)
+		return exitConfigError
+	}
+
+	tlsConfig, err := buildEtcdTLSConfig(cfgCopy.EtcdTLS)
+	if err != nil {
+		fmt.Fprintf(stderr, "failed to configure etcd TLS: %v\n", err)
+		return exitConfigError
+	}
+
+	locker, err := lock.NewEtcdManager(lock.EtcdManagerOptions{
+		Endpoints:   cfgCopy.EtcdEndpoints,
+		DialTimeout: 5 * time.Second,
+		LockKey:     cfgCopy.LockKey,
+		Namespace:   cfgCopy.EtcdNamespace,
+		TTL:         cfgCopy.LockTTL(),
+		TLS:         tlsConfig,
+	})
+	if err != nil {
+		fmt.Fprintf(stderr, "failed to initialise lock manager: %v\n", err)
+		return exitRunError
+	}
+	defer locker.Close()
+
+	runner, err := orchestrator.NewRunner(&cfgCopy, engine, healthRunner, locker, orchestrator.WithMaxLockAttempts(1))
+	if err != nil {
+		fmt.Fprintf(stderr, "failed to initialise orchestrator: %v\n", err)
+		return exitRunError
+	}
+
+	fmt.Fprintf(stdout, "status evaluation for node %s (dry-run enforced)\n", cfgCopy.NodeName)
+
+	outcome, runErr := runner.RunOnce(context.Background())
+	if runErr != nil {
+		if errors.Is(runErr, context.Canceled) || errors.Is(runErr, context.DeadlineExceeded) {
+			fmt.Fprintf(stderr, "status check cancelled: %v\n", runErr)
+			return exitRunError
+		}
+		fmt.Fprintf(stderr, "status check error: %v\n", runErr)
+		return exitRunError
+	}
+
+	reportOutcome(stdout, outcome)
+	fmt.Fprintln(stdout)
+
+	return exitOK
+}
+
+func buildBaseEnvironment(cfg *config.Config) map[string]string {
+	env := map[string]string{
+		"RC_NODE_NAME": cfg.NodeName,
+		"RC_DRY_RUN":   strconv.FormatBool(cfg.DryRun),
+	}
+	if cfg.LockKey != "" {
+		env["RC_LOCK_KEY"] = cfg.LockKey
+	}
+	if len(cfg.EtcdEndpoints) > 0 {
+		env["RC_ETCD_ENDPOINTS"] = strings.Join(cfg.EtcdEndpoints, ",")
+	}
+	if cfg.KillSwitchFile != "" {
+		env["RC_KILL_SWITCH_FILE"] = cfg.KillSwitchFile
+	}
+	return env
 }
 
 func commandValidate(args []string) int {
