@@ -73,8 +73,10 @@ The CLI currently offers early validation and introspection helpers:
 - `reboot-coordinator run`
   Starts the long-running orchestration loop.  The daemon continuously
   evaluates detectors, re-runs the health gate, and executes the configured
-  reboot command once all safeguards succeed.  Pass `--once` to execute a
-  single diagnostic pass without invoking the reboot command.
+  reboot command once all safeguards succeed.  Transient errors during an
+  iteration are logged to `stderr` and retried with an exponential backoff so
+  operators do not need to restart the process manually.  Pass `--once` to
+  execute a single diagnostic pass without invoking the reboot command.
 
 Future milestones will extend the loop with structured logging, observability
 integrations, packaging assets, and the full CI/CD pipeline described in the
@@ -100,6 +102,16 @@ When enabled, the daemon starts an HTTP listener on the configured address and
 serves Prometheus-compatible counters and histograms under `/metrics`.  The
 environment of the health script receives `RC_METRICS_ENDPOINT` so checks can
 optionally validate that scraping works as expected.
+
+## Operational Guidance
+
+- `reboot-coordinator run` listens for `SIGINT` and `SIGTERM` and exits
+  gracefully, which allows service managers such as systemd to stop the daemon
+  without forcing a reboot attempt mid-flight.
+- When the loop encounters a runtime error (for example a transient etcd
+  failure or health script timeout), the CLI prints a retry message and waits
+  with an exponential backoff (5s doubling up to 1m by default) before trying
+  again.
 
 ## Development Philosophy
 

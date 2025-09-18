@@ -11,6 +11,9 @@
 - CLI offers `validate-config`, `simulate`, `run`, and `version`; `run` now drives
   the long-lived orchestration loop while `--once` preserves the diagnostic
   single-pass flow for smoke tests.
+- The orchestration loop now retries transient runtime failures with an
+  exponential backoff and listens for SIGINT/SIGTERM so operators can stop the
+  daemon cleanly when managed by service supervisors.
 - A reproducible dev container (Go 1.22 with etcd 3.6.4) is available for local
   development and integration testing.
 - CLI run mode now wires the reporter into a JSON logger on stderr and an
@@ -18,8 +21,7 @@
   script environment for runtime validation.
 
 ## Next Up
-- Harden the loop with graceful error handling (transient retry strategy and
-  richer documentation on operational runbooks).
+- (to be filled)
 
 ## Backlog
 - Add systemd service files and packaging assets for deb/rpm targets.

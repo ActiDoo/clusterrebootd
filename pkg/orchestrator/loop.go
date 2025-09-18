@@ -22,6 +22,10 @@ type Loop struct {
 	interval      time.Duration
 	sleep         func(time.Duration)
 	iterationHook func(Outcome)
+	errorHandler  func(error)
+	errorBackoff  time.Duration
+	errorMinDelay time.Duration
+	errorMaxDelay time.Duration
 }
 
 // LoopOption customises loop behaviour.
@@ -48,6 +52,21 @@ func WithLoopInterval(d time.Duration) LoopOption {
 	}
 }
 
+// WithLoopErrorHandler registers a callback for retryable orchestration errors.
+func WithLoopErrorHandler(fn func(error)) LoopOption {
+	return func(l *Loop) {
+		l.errorHandler = fn
+	}
+}
+
+// WithLoopErrorBackoff overrides the retry backoff window applied after errors.
+func WithLoopErrorBackoff(min, max time.Duration) LoopOption {
+	return func(l *Loop) {
+		l.errorMinDelay = min
+		l.errorMaxDelay = max
+	}
+}
+
 // NewLoop constructs a Loop backed by the provided runner and executor.
 func NewLoop(cfg *config.Config, runner SinglePassRunner, executor CommandExecutor, opts ...LoopOption) (*Loop, error) {
 	if cfg == nil {
@@ -61,11 +80,13 @@ func NewLoop(cfg *config.Config, runner SinglePassRunner, executor CommandExecut
 	}
 
 	loop := &Loop{
-		cfg:      cfg,
-		runner:   runner,
-		executor: executor,
-		interval: cfg.CheckInterval(),
-		sleep:    time.Sleep,
+		cfg:           cfg,
+		runner:        runner,
+		executor:      executor,
+		interval:      cfg.CheckInterval(),
+		sleep:         time.Sleep,
+		errorMinDelay: 5 * time.Second,
+		errorMaxDelay: time.Minute,
 	}
 
 	for _, opt := range opts {
@@ -80,6 +101,15 @@ func NewLoop(cfg *config.Config, runner SinglePassRunner, executor CommandExecut
 	}
 	if loop.interval <= 0 {
 		loop.interval = time.Minute
+	}
+	if loop.errorMinDelay <= 0 {
+		loop.errorMinDelay = 5 * time.Second
+	}
+	if loop.errorMaxDelay <= 0 {
+		loop.errorMaxDelay = loop.errorMinDelay
+	}
+	if loop.errorMaxDelay < loop.errorMinDelay {
+		loop.errorMaxDelay = loop.errorMinDelay
 	}
 
 	return loop, nil
@@ -100,8 +130,17 @@ func (l *Loop) Run(ctx context.Context) error {
 
 		outcome, err := l.runner.RunOnce(ctx)
 		if err != nil {
-			return fmt.Errorf("orchestration iteration: %w", err)
+			if l.errorHandler != nil {
+				l.errorHandler(err)
+			}
+			if delay := l.nextErrorDelay(); delay > 0 {
+				if sleepErr := l.sleepWithContext(ctx, delay); sleepErr != nil {
+					return sleepErr
+				}
+			}
+			continue
 		}
+		l.resetErrorBackoff()
 
 		if l.iterationHook != nil {
 			l.iterationHook(outcome)
@@ -121,6 +160,28 @@ func (l *Loop) Run(ctx context.Context) error {
 			return err
 		}
 	}
+}
+
+func (l *Loop) nextErrorDelay() time.Duration {
+	if l.errorMinDelay <= 0 {
+		return 0
+	}
+	if l.errorBackoff <= 0 {
+		l.errorBackoff = l.errorMinDelay
+	} else {
+		l.errorBackoff *= 2
+		if l.errorBackoff < l.errorMinDelay {
+			l.errorBackoff = l.errorMinDelay
+		}
+	}
+	if l.errorBackoff > l.errorMaxDelay {
+		l.errorBackoff = l.errorMaxDelay
+	}
+	return l.errorBackoff
+}
+
+func (l *Loop) resetErrorBackoff() {
+	l.errorBackoff = 0
 }
 
 func (l *Loop) sleepWithContext(ctx context.Context, d time.Duration) error {
