@@ -11,6 +11,9 @@
 - CLI offers `validate-config`, `simulate`, `run`, and `version`; `run` now drives
   the long-lived orchestration loop while `--once` preserves the diagnostic
   single-pass flow for smoke tests.
+- The orchestration loop now retries transient runtime failures with an
+  exponential backoff and listens for SIGINT/SIGTERM so operators can stop the
+  daemon cleanly when managed by service supervisors.
 - A reproducible dev container (Go 1.22 with etcd 3.6.4) is available for local
   development and integration testing.
 - Observability scaffolding emits structured events and metric observations via a
@@ -18,9 +21,6 @@
   touching orchestration logic.
 
 ## Next Up
-- Harden the loop with graceful error handling (transient retry strategy,
-  signal-aware shutdown) and document operational guidance for running it as a
-  daemon.
 - Wire the reporter into concrete sinks (JSON logs, Prometheus collectors) and
   expose the metrics endpoint described in the PRD.
 
