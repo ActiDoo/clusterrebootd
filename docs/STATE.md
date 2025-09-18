@@ -4,7 +4,7 @@
 - Core libraries for configuration parsing/validation, reboot detectors, and the
   health script runner are joined by an orchestrator runner that executes a
   single reboot pass with detector rechecks, kill-switch handling, and health
-  gating through a pluggable lock manager (currently a no-op implementation).
+  gating backed by an etcd lock manager with retries and configurable TTLs.
 - Detector engine aggregates per-detector results with timing and command output
   to support simulation, orchestration decisions, and CLI reporting.
 - CLI offers `validate-config`, `simulate`, `run`, and `version`; `run`
@@ -14,9 +14,9 @@
   development and integration testing.
 
 ## Next Up
-- Implement an etcd-backed lock manager and evolve the runner into the
-  long-lived orchestration loop, including an execution path for the reboot
-  command once safeguards are fully in place.
+- Evolve the single-pass runner into the long-lived orchestration loop, adding
+  lock lease renewal, repeated health checks, and an execution path for the
+  reboot command once safeguards are fully in place.
 - Define structured logging fields and metrics scaffolding so the loop can emit
   observability data once integrated.
 

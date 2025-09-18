@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"flag"
 	"fmt"
 	"io"
@@ -123,7 +125,25 @@ func commandRunWithWriters(args []string, stdout, stderr io.Writer) int {
 		return exitConfigError
 	}
 
-	locker := lock.NewNoopManager()
+	tlsConfig, err := buildEtcdTLSConfig(cfg.EtcdTLS)
+	if err != nil {
+		fmt.Fprintf(stderr, "failed to configure etcd TLS: %v\n", err)
+		return exitConfigError
+	}
+
+	locker, err := lock.NewEtcdManager(lock.EtcdManagerOptions{
+		Endpoints:   cfg.EtcdEndpoints,
+		DialTimeout: 5 * time.Second,
+		LockKey:     cfg.LockKey,
+		Namespace:   cfg.EtcdNamespace,
+		TTL:         cfg.LockTTL(),
+		TLS:         tlsConfig,
+	})
+	if err != nil {
+		fmt.Fprintf(stderr, "failed to initialise lock manager: %v\n", err)
+		return exitRunError
+	}
+	defer locker.Close()
 
 	runner, err := orchestrator.NewRunner(cfg, engine, healthRunner, locker)
 	if err != nil {
@@ -279,4 +299,33 @@ func writeHealthResult(w io.Writer, label string, res *health.Result) {
 	if errText := strings.TrimSpace(res.Stderr); errText != "" {
 		fmt.Fprintf(w, "  stderr: %s\n", errText)
 	}
+}
+
+func buildEtcdTLSConfig(cfg *config.EtcdTLSConfig) (*tls.Config, error) {
+	if cfg == nil || !cfg.Enabled {
+		return nil, nil
+	}
+
+	cert, err := tls.LoadX509KeyPair(cfg.CertFile, cfg.KeyFile)
+	if err != nil {
+		return nil, fmt.Errorf("load etcd client certificate: %w", err)
+	}
+
+	caBytes, err := os.ReadFile(cfg.CAFile)
+	if err != nil {
+		return nil, fmt.Errorf("read etcd CA file: %w", err)
+	}
+	pool := x509.NewCertPool()
+	if !pool.AppendCertsFromPEM(caBytes) {
+		return nil, fmt.Errorf("parse etcd CA file: %s", cfg.CAFile)
+	}
+
+	tlsConfig := &tls.Config{
+		Certificates:       []tls.Certificate{cert},
+		RootCAs:            pool,
+		MinVersion:         tls.VersionTLS12,
+		InsecureSkipVerify: cfg.Insecure,
+	}
+
+	return tlsConfig, nil
 }
