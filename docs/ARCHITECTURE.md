@@ -8,7 +8,7 @@ kernel reboots across a distributed cluster.
 
 ```
 +-------------------------------+
-|  reboot-coordinator daemon    |
+|  clusterrebootd daemon        |
 |                               |
 |  +-------------------------+  |
 |  | Detector Engine         |  |  -> Evaluates reboot-required signals via
@@ -32,13 +32,13 @@ reusable:
 - `pkg/lock` (future): etcd v3 mutex handling with lease renewal.
 - `pkg/metrics` (future): Prometheus collectors, JSON logging helpers.
 
-The `cmd/reboot-coordinator` binary wires the packages into a cohesive daemon
+The `cmd/clusterrebootd` binary wires the packages into a cohesive daemon
 and exposes CLI helpers for validation and simulation.
 
 ## Configuration Lifecycle
 
 1. **Load & Parse** – Config is read from YAML (default
-   `/etc/reboot-coordinator/config.yaml`).  Unknown fields are rejected to
+   `/etc/clusterrebootd/config.yaml`).  Unknown fields are rejected to
    prevent silent misconfiguration.
 2. **Defaulting** – Sensible defaults (TTL 90s, health timeout 30s, backoff 5–60s,
    metrics listener, kill-switch path) reduce boilerplate.

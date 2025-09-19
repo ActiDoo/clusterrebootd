@@ -38,15 +38,15 @@ recommendations:
 
 | Destination | Type        | Owner/Mode | Notes |
 |-------------|-------------|------------|-------|
-| `/usr/bin/reboot-coordinator` | Binary | `root:root 0755` | Statically linked CLI/daemon. |
-| `/etc/reboot-coordinator/` | Directory | `root:root 0750` | Hosts config and kill switch. Created in pre-install if absent. |
-| `/etc/reboot-coordinator/config.yaml` | Conffile | `root:root 0640` | Disabled template with documentation comments; packaged as a conffile so local edits survive upgrades. |
-| `/etc/reboot-coordinator/config.d/` | Directory | `root:root 0750` | Optional drop-in directory reserved for future overrides; empty directory shipped to reserve the namespace. |
-| `/etc/reboot-coordinator/disable` | File (absent by default) | `root:root 0640` | Kill switch sentinel. Package does **not** create the file; documentation explains its semantics. |
-| `/usr/lib/systemd/system/reboot-coordinator.service` (`/lib/systemd/system` on Debian/Ubuntu) | systemd unit | `root:root 0644` | Primary service unit. |
-| `/usr/lib/tmpfiles.d/reboot-coordinator.conf` | tmpfiles.d | `root:root 0644` | Ensures `/run/reboot-coordinator` runtime directory exists with 0750 permissions for future state files. |
-| `/usr/share/doc/reboot-coordinator/README.Debian` (Deb-based) | Documentation | `root:root 0644` | Points to upstream docs and summarises enablement steps. |
-| `/usr/share/licenses/reboot-coordinator/LICENSE` | Documentation | `root:root 0644` | License file copied from repository root. |
+| `/usr/bin/clusterrebootd` | Binary | `root:root 0755` | Statically linked CLI/daemon. |
+| `/etc/clusterrebootd/` | Directory | `root:root 0750` | Hosts config and kill switch. Created in pre-install if absent. |
+| `/etc/clusterrebootd/config.yaml` | Conffile | `root:root 0640` | Disabled template with documentation comments; packaged as a conffile so local edits survive upgrades. |
+| `/etc/clusterrebootd/config.d/` | Directory | `root:root 0750` | Optional drop-in directory reserved for future overrides; empty directory shipped to reserve the namespace. |
+| `/etc/clusterrebootd/disable` | File (absent by default) | `root:root 0640` | Kill switch sentinel. Package does **not** create the file; documentation explains its semantics. |
+| `/usr/lib/systemd/system/clusterrebootd.service` (`/lib/systemd/system` on Debian/Ubuntu) | systemd unit | `root:root 0644` | Primary service unit. |
+| `/usr/lib/tmpfiles.d/clusterrebootd.conf` | tmpfiles.d | `root:root 0644` | Ensures `/run/clusterrebootd` runtime directory exists with 0750 permissions for future state files. |
+| `/usr/share/doc/clusterrebootd/README.Debian` (Deb-based) | Documentation | `root:root 0644` | Points to upstream docs and summarises enablement steps. |
+| `/usr/share/licenses/clusterrebootd/LICENSE` | Documentation | `root:root 0644` | License file copied from repository root. |
 
 ### Configuration Handling
 
@@ -62,14 +62,14 @@ recommendations:
 ### Runtime Directory
 
 While the daemon currently does not persist data under `/run`, reserving
-`/run/reboot-coordinator` via `tmpfiles.d` enables future extensions (lock
+`/run/clusterrebootd` via `tmpfiles.d` enables future extensions (lock
 metadata, health cache) without modifying the package layout.  The systemd unit
-references the runtime directory using `RuntimeDirectory=reboot-coordinator` so
+references the runtime directory using `RuntimeDirectory=clusterrebootd` so
 systemd manages creation on start for hosts without `tmpfiles` support.
 
 ## Systemd Service Contract
 
-The packaged unit `reboot-coordinator.service` codifies the following contract:
+The packaged unit `clusterrebootd.service` codifies the following contract:
 
 ```
 [Unit]
@@ -79,17 +79,17 @@ After=network-online.target
 Wants=network-online.target
 StartLimitIntervalSec=60
 StartLimitBurst=5
-ConditionPathExists=!/etc/reboot-coordinator/disable
+ConditionPathExists=!/etc/clusterrebootd/disable
 
 [Service]
 Type=simple
-ExecStart=/usr/bin/reboot-coordinator run --config /etc/reboot-coordinator/config.yaml
+ExecStart=/usr/bin/clusterrebootd run --config /etc/clusterrebootd/config.yaml
 Restart=always
 RestartSec=5
-RuntimeDirectory=reboot-coordinator
+RuntimeDirectory=clusterrebootd
 RuntimeDirectoryMode=0750
 # Health script and metrics inherit defaults from config.yaml
-# Environment overrides can be placed in /etc/systemd/system/reboot-coordinator.service.d/*.conf
+# Environment overrides can be placed in /etc/systemd/system/clusterrebootd.service.d/*.conf
 
 [Install]
 WantedBy=multi-user.target
@@ -97,20 +97,20 @@ WantedBy=multi-user.target
 
 Key points:
 
-- **Kill switch integration:** `ConditionPathExists=!/etc/reboot-coordinator/disable`
+- **Kill switch integration:** `ConditionPathExists=!/etc/clusterrebootd/disable`
   prevents automatic starts when operators intentionally disable reboots.
 - **Graceful shutdown:** the binary already handles `SIGINT/SIGTERM`, so `KillMode`
   remains default (`control-group`).
 - **Restart policy:** short retry window (`RestartSec=5`) paired with
   `StartLimit*` guards to avoid crash loops; consistent with orchestrator
   backoff inside the daemon.
-- **RuntimeDirectory:** ensures `/run/reboot-coordinator` exists with controlled
+- **RuntimeDirectory:** ensures `/run/clusterrebootd` exists with controlled
   permissions before execution.
 - **Operator overrides:** the blueprint expects drop-in units for custom
   environment variables (`Environment=`) or additional dependencies.
 
 The package will include a README entry instructing operators to run `systemctl
-enable --now reboot-coordinator.service` after configuring the daemon.  To avoid
+enable --now clusterrebootd.service` after configuring the daemon.  To avoid
 accidental reboots the post-install script will **not** enable or start the
 service automatically.
 
@@ -120,13 +120,13 @@ Both package formats share logically equivalent scripts (translated to shell and
 Lua as required by `rpm`):
 
 - **Pre-install:**
-  - Create `/etc/reboot-coordinator` with `0750` perms if missing.
-  - Ensure `/etc/reboot-coordinator/config.d` exists.
+  - Create `/etc/clusterrebootd` with `0750` perms if missing.
+  - Ensure `/etc/clusterrebootd/config.d` exists.
   - Do **not** create the kill-switch file; if present, preserve permissions.
 - **Post-install:**
-  - Run `systemd-tmpfiles --create /usr/lib/tmpfiles.d/reboot-coordinator.conf`.
+  - Run `systemd-tmpfiles --create /usr/lib/tmpfiles.d/clusterrebootd.conf`.
   - Execute `systemctl daemon-reload` if systemd is active.
-  - Emit a notice reminding operators to review `/etc/reboot-coordinator/config.yaml`
+  - Emit a notice reminding operators to review `/etc/clusterrebootd/config.yaml`
     and enable the service manually.
 - **Pre-uninstall:**
   - Stop the service (`systemctl stop`) only when removing the package (not during
@@ -134,7 +134,7 @@ Lua as required by `rpm`):
 - **Post-uninstall:**
   - Reload systemd units.
   - Leave configuration files untouched unless the operator removes them
-    explicitly (packaging does not delete `/etc/reboot-coordinator`).
+    explicitly (packaging does not delete `/etc/clusterrebootd`).
 
 The scripts must treat non-systemd environments defensively (check for the
 presence of `/run/systemd/system`).  Because the daemon may be installed on hosts
@@ -147,7 +147,7 @@ The `nfpm.yaml` template will capture shared metadata and use build-time
 variables for versioning:
 
 ```yaml
-name: reboot-coordinator
+name: clusterrebootd
 arch: ${ARCH}
 platform: linux
 version: ${VERSION}
@@ -160,25 +160,25 @@ license: Apache-2.0
 homepage: https://github.com/clusterrebootd/clusterrebootd
 maintainer: Platform SRE Team <sre@example.com>
 contents:
-  - src: ./dist/reboot-coordinator
-    dst: /usr/bin/reboot-coordinator
+  - src: ./dist/clusterrebootd
+    dst: /usr/bin/clusterrebootd
     file_info:
       mode: 0755
   - src: ./packaging/config.yaml
-    dst: /etc/reboot-coordinator/config.yaml
+    dst: /etc/clusterrebootd/config.yaml
     type: config
     file_info:
       mode: 0640
-  - src: ./packaging/systemd/reboot-coordinator.service
-    dst: /lib/systemd/system/reboot-coordinator.service
-  - src: ./packaging/tmpfiles/reboot-coordinator.conf
-    dst: /usr/lib/tmpfiles.d/reboot-coordinator.conf
+  - src: ./packaging/systemd/clusterrebootd.service
+    dst: /lib/systemd/system/clusterrebootd.service
+  - src: ./packaging/tmpfiles/clusterrebootd.conf
+    dst: /usr/lib/tmpfiles.d/clusterrebootd.conf
   - src: ./LICENSE
-    dst: /usr/share/licenses/reboot-coordinator/LICENSE
+    dst: /usr/share/licenses/clusterrebootd/LICENSE
     file_info:
       mode: 0644
   - src: ./docs/PACKAGING_BLUEPRINT.md
-    dst: /usr/share/doc/reboot-coordinator/PACKAGING_BLUEPRINT.md
+    dst: /usr/share/doc/clusterrebootd/PACKAGING_BLUEPRINT.md
     file_info:
       mode: 0644
 overrides:
@@ -204,7 +204,7 @@ overrides:
 
 Key practices:
 
-- Build pipeline copies the compiled binary to `./dist/reboot-coordinator` and
+- Build pipeline copies the compiled binary to `./dist/clusterrebootd` and
   staged packaging assets into `./packaging/...` before invoking `nfpm`.
 - The `config` type ensures dpkg/rpm treat `config.yaml` as a managed conffile.
 - All scripts are version-controlled so changes go through code review.

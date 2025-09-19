@@ -161,7 +161,7 @@ func TestConfigTemplateHasSafeDefaults(t *testing.T) {
 	if len(cfg.EtcdEndpoints) != 0 {
 		t.Fatalf("expected etcd_endpoints to be empty, got %v", cfg.EtcdEndpoints)
 	}
-	if cfg.KillSwitchFile != "/etc/reboot-coordinator/disable" {
+        if cfg.KillSwitchFile != "/etc/clusterrebootd/disable" {
 		t.Fatalf("unexpected kill_switch_file: %q", cfg.KillSwitchFile)
 	}
 	if cfg.Metrics.Enabled {
@@ -203,7 +203,7 @@ func TestConfigTemplateHasSafeDefaults(t *testing.T) {
 }
 
 func TestSystemdUnitMatchesBlueprint(t *testing.T) {
-	data := readPackagingFile(t, filepath.Join("systemd", "reboot-coordinator.service"))
+        data := readPackagingFile(t, filepath.Join("systemd", "clusterrebootd.service"))
 	content := string(data)
 
 	expectedSnippets := []string{
@@ -213,11 +213,11 @@ func TestSystemdUnitMatchesBlueprint(t *testing.T) {
 		"Wants=network-online.target",
 		"StartLimitIntervalSec=60",
 		"StartLimitBurst=5",
-		"ConditionPathExists=!/etc/reboot-coordinator/disable",
-		"ExecStart=/usr/bin/reboot-coordinator run --config /etc/reboot-coordinator/config.yaml",
+                "ConditionPathExists=!/etc/clusterrebootd/disable",
+                "ExecStart=/usr/bin/clusterrebootd run --config /etc/clusterrebootd/config.yaml",
 		"Restart=always",
 		"RestartSec=5",
-		"RuntimeDirectory=reboot-coordinator",
+                "RuntimeDirectory=clusterrebootd",
 		"RuntimeDirectoryMode=0750",
 		"WantedBy=multi-user.target",
 	}
@@ -230,11 +230,11 @@ func TestSystemdUnitMatchesBlueprint(t *testing.T) {
 }
 
 func TestTmpfilesConfigurationReservesRuntimeDirectory(t *testing.T) {
-	data := readPackagingFile(t, filepath.Join("tmpfiles", "reboot-coordinator.conf"))
-	content := string(data)
-	if !strings.Contains(content, "d /run/reboot-coordinator 0750 root root -") {
-		t.Fatalf("expected tmpfiles configuration to create /run/reboot-coordinator, got: %s", content)
-	}
+        data := readPackagingFile(t, filepath.Join("tmpfiles", "clusterrebootd.conf"))
+        content := string(data)
+        if !strings.Contains(content, "d /run/clusterrebootd 0750 root root -") {
+                t.Fatalf("expected tmpfiles configuration to create /run/clusterrebootd, got: %s", content)
+        }
 }
 
 func TestMaintainerScriptsAreDefensive(t *testing.T) {
@@ -272,17 +272,17 @@ func TestMaintainerScriptsAreDefensive(t *testing.T) {
 	if !strings.Contains(postinst, "systemd-tmpfiles --create") {
 		t.Fatalf("expected deb postinst to apply tmpfiles configuration")
 	}
-	if !strings.Contains(postinst, "reboot-coordinator validate-config") {
-		t.Fatalf("expected deb postinst to instruct operators to validate the configuration")
-	}
+        if !strings.Contains(postinst, "clusterrebootd validate-config") {
+                t.Fatalf("expected deb postinst to instruct operators to validate the configuration")
+        }
 
 	rpmPostinstall := string(readPackagingFile(t, filepath.Join("scripts", "rpm", "postinstall.sh")))
 	if !strings.Contains(rpmPostinstall, "systemd-tmpfiles --create") {
 		t.Fatalf("expected rpm postinstall to apply tmpfiles configuration")
 	}
-	if !strings.Contains(rpmPostinstall, "reboot-coordinator validate-config") {
-		t.Fatalf("expected rpm postinstall to instruct operators to validate the configuration")
-	}
+        if !strings.Contains(rpmPostinstall, "clusterrebootd validate-config") {
+                t.Fatalf("expected rpm postinstall to instruct operators to validate the configuration")
+        }
 }
 
 func TestNFPMConfigurationMatchesBlueprint(t *testing.T) {
@@ -291,9 +291,9 @@ func TestNFPMConfigurationMatchesBlueprint(t *testing.T) {
 	var cfg nfpmConfig
 	decodeYAMLStrict(t, data, &cfg)
 
-	if cfg.Name != "reboot-coordinator" {
-		t.Fatalf("unexpected package name %q", cfg.Name)
-	}
+        if cfg.Name != "clusterrebootd" {
+                t.Fatalf("unexpected package name %q", cfg.Name)
+        }
 	if cfg.Arch != "${ARCH}" {
 		t.Fatalf("expected arch placeholder to be ${ARCH}, got %q", cfg.Arch)
 	}
@@ -309,15 +309,15 @@ func TestNFPMConfigurationMatchesBlueprint(t *testing.T) {
 		contentByDest[entry.Dst] = entry
 	}
 
-	binary := contentByDest["/usr/bin/reboot-coordinator"]
-	if binary.Src != "./dist/reboot-coordinator" {
-		t.Fatalf("unexpected binary source %q", binary.Src)
-	}
+        binary := contentByDest["/usr/bin/clusterrebootd"]
+        if binary.Src != "./dist/clusterrebootd" {
+                t.Fatalf("unexpected binary source %q", binary.Src)
+        }
 	if binary.FileInfo.Mode != "0755" {
 		t.Fatalf("expected binary mode 0755, got %q", binary.FileInfo.Mode)
 	}
 
-	configEntry := contentByDest["/etc/reboot-coordinator/config.yaml"]
+        configEntry := contentByDest["/etc/clusterrebootd/config.yaml"]
 	if configEntry.Src != "./packaging/config.yaml" {
 		t.Fatalf("unexpected config source %q", configEntry.Src)
 	}
@@ -328,26 +328,26 @@ func TestNFPMConfigurationMatchesBlueprint(t *testing.T) {
 		t.Fatalf("expected config file mode 0640, got %q", configEntry.FileInfo.Mode)
 	}
 
-	if _, ok := contentByDest["/lib/systemd/system/reboot-coordinator.service"]; !ok {
-		t.Fatalf("expected systemd unit to be packaged")
-	}
-	if entry := contentByDest["/usr/lib/tmpfiles.d/reboot-coordinator.conf"]; entry.Src != "./packaging/tmpfiles/reboot-coordinator.conf" {
-		t.Fatalf("unexpected tmpfiles source %q", entry.Src)
-	}
-	if entry := contentByDest["/usr/share/licenses/reboot-coordinator/LICENSE"]; entry.Src != "./LICENSE" {
-		t.Fatalf("expected license to be copied from repository root, got %q", entry.Src)
-	}
-	if entry := contentByDest["/usr/share/doc/reboot-coordinator/PACKAGING_BLUEPRINT.md"]; entry.Src != "./docs/PACKAGING_BLUEPRINT.md" {
-		t.Fatalf("expected packaging blueprint to be shipped as documentation, got %q", entry.Src)
-	}
+        if _, ok := contentByDest["/lib/systemd/system/clusterrebootd.service"]; !ok {
+                t.Fatalf("expected systemd unit to be packaged")
+        }
+        if entry := contentByDest["/usr/lib/tmpfiles.d/clusterrebootd.conf"]; entry.Src != "./packaging/tmpfiles/clusterrebootd.conf" {
+                t.Fatalf("unexpected tmpfiles source %q", entry.Src)
+        }
+        if entry := contentByDest["/usr/share/licenses/clusterrebootd/LICENSE"]; entry.Src != "./LICENSE" {
+                t.Fatalf("expected license to be copied from repository root, got %q", entry.Src)
+        }
+        if entry := contentByDest["/usr/share/doc/clusterrebootd/PACKAGING_BLUEPRINT.md"]; entry.Src != "./docs/PACKAGING_BLUEPRINT.md" {
+                t.Fatalf("expected packaging blueprint to be shipped as documentation, got %q", entry.Src)
+        }
 
 	debContent := make(map[string]nfpmContent, len(cfg.Overrides.Deb.Contents))
 	for _, entry := range cfg.Overrides.Deb.Contents {
 		debContent[entry.Dst] = entry
 	}
-	if entry, ok := debContent["/usr/share/doc/reboot-coordinator/README.Debian"]; !ok || entry.Src != "./packaging/docs/README.Debian" {
-		t.Fatalf("expected Debian README to be packaged, got %+v", entry)
-	}
+        if entry, ok := debContent["/usr/share/doc/clusterrebootd/README.Debian"]; !ok || entry.Src != "./packaging/docs/README.Debian" {
+                t.Fatalf("expected Debian README to be packaged, got %+v", entry)
+        }
 
 	if !contains(cfg.Overrides.Deb.Depends, "systemd") {
 		t.Fatalf("expected Debian package to depend on systemd")

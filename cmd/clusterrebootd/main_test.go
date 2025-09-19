@@ -97,7 +97,7 @@ health_script: /bin/true
 etcd_endpoints:
   - %s
 kill_switch_file: %s
-lock_key: /cluster/reboot-coordinator/lock
+lock_key: /cluster/clusterrebootd/lock
 lock_ttl_sec: 120
 `, marker, endpoint, killSwitch)
 
@@ -141,7 +141,7 @@ health_script: /bin/true
 etcd_endpoints:
   - %s
 kill_switch_file: %s
-lock_key: /cluster/reboot-coordinator/lock
+lock_key: /cluster/clusterrebootd/lock
 lock_ttl_sec: 120
 `, marker, endpoint, killSwitch)
 
@@ -195,7 +195,7 @@ reboot_required_detectors:
 health_script: %s
 etcd_endpoints:
   - %s
-lock_key: /cluster/reboot-coordinator/lock
+lock_key: /cluster/clusterrebootd/lock
 lock_ttl_sec: 120
 `, marker, healthScript, endpoint)
 
@@ -239,7 +239,7 @@ health_script: /bin/true
 etcd_endpoints:
   - %s
 kill_switch_file: %s
-lock_key: /cluster/reboot-coordinator/lock
+lock_key: /cluster/clusterrebootd/lock
 lock_ttl_sec: 120
 `, marker, endpoint, killSwitch)
 
@@ -281,7 +281,7 @@ reboot_required_detectors:
 health_script: /bin/true
 etcd_endpoints:
   - %s
-lock_key: /cluster/reboot-coordinator/lock
+lock_key: /cluster/clusterrebootd/lock
 lock_ttl_sec: 120
 backoff_min_sec: 1
 backoff_max_sec: 1
@@ -296,7 +296,7 @@ backoff_max_sec: 1
 
 	manager, err := lock.NewEtcdManager(lock.EtcdManagerOptions{
 		Endpoints: cluster.Endpoints,
-		LockKey:   "/cluster/reboot-coordinator/lock",
+		LockKey:   "/cluster/clusterrebootd/lock",
 		TTL:       120 * time.Second,
 		NodeName:  "lock-holder",
 		ProcessID: os.Getpid(),
@@ -344,7 +344,7 @@ health_script: /bin/true
 etcd_endpoints:
   - %s
 kill_switch_file: %s
-lock_key: /cluster/reboot-coordinator/lock
+lock_key: /cluster/clusterrebootd/lock
 lock_ttl_sec: 120
 metrics:
   enabled: true
@@ -388,7 +388,7 @@ health_script: /bin/true
 etcd_endpoints:
   - %s
 kill_switch_file: %s
-lock_key: /cluster/reboot-coordinator/lock
+lock_key: /cluster/clusterrebootd/lock
 lock_ttl_sec: 120
 `, marker, endpoint, killSwitch)
 
@@ -432,7 +432,7 @@ health_script: /bin/true
 etcd_endpoints:
   - %s
 kill_switch_file: %s
-lock_key: /cluster/reboot-coordinator/lock
+lock_key: /cluster/clusterrebootd/lock
 lock_ttl_sec: 120
 `, marker, endpoint, killSwitch)
 
@@ -479,7 +479,7 @@ health_script: /bin/true
 etcd_endpoints:
   - %s
 kill_switch_file: %s
-lock_key: /cluster/reboot-coordinator/lock
+lock_key: /cluster/clusterrebootd/lock
 lock_ttl_sec: 120
 `, marker, endpoint, killSwitch)
 
@@ -492,7 +492,7 @@ lock_ttl_sec: 120
 
 	manager, err := lock.NewEtcdManager(lock.EtcdManagerOptions{
 		Endpoints: cluster.Endpoints,
-		LockKey:   "/cluster/reboot-coordinator/lock",
+		LockKey:   "/cluster/clusterrebootd/lock",
 		TTL:       120 * time.Second,
 		NodeName:  "test-node",
 		ProcessID: 1337,
@@ -544,7 +544,7 @@ reboot_required_detectors:
 health_script: %s
 etcd_endpoints:
   - %s
-lock_key: /cluster/reboot-coordinator/lock
+lock_key: /cluster/clusterrebootd/lock
 lock_ttl_sec: 120
 `, marker, healthScript, endpoint)
 
@@ -588,7 +588,7 @@ health_script: /bin/true
 etcd_endpoints:
   - %s
 kill_switch_file: %s
-lock_key: /cluster/reboot-coordinator/lock
+lock_key: /cluster/clusterrebootd/lock
 lock_ttl_sec: 120
 `, marker, endpoint, killSwitch)
 
@@ -631,7 +631,7 @@ reboot_required_detectors:
 health_script: %s
 etcd_endpoints:
   - %s
-lock_key: /cluster/reboot-coordinator/lock
+lock_key: /cluster/clusterrebootd/lock
 lock_ttl_sec: 120
 `, marker, missingHealth, endpoint)
 
@@ -678,7 +678,7 @@ reboot_required_detectors:
 health_script: /bin/true
 etcd_endpoints:
   - 127.0.0.1:12379
-lock_key: /cluster/reboot-coordinator/lock
+lock_key: /cluster/clusterrebootd/lock
 lock_ttl_sec: 120
 `, marker)
 
@@ -719,7 +719,7 @@ func TestBuildBaseEnvironmentIncludesPolicyContext(t *testing.T) {
 		DryRun:         true,
 		LockKey:        "/cluster/lock",
 		EtcdEndpoints:  []string{"10.0.0.10:2379", "10.0.0.11:2379"},
-		KillSwitchFile: "/etc/reboot-coordinator/disable",
+		KillSwitchFile: "/etc/clusterrebootd/disable",
 		ClusterPolicies: config.ClusterPolicies{
 			MinHealthyFraction:       &minFrac,
 			MinHealthyAbsolute:       &minAbs,

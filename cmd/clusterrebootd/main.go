@@ -68,7 +68,7 @@ func run(args []string) int {
 }
 
 func usage() {
-	fmt.Fprintf(os.Stderr, `Usage: reboot-coordinator <command> [options]
+	fmt.Fprintf(os.Stderr, `Usage: clusterrebootd <command> [options]
 Commands:
   run                Start the orchestration loop (use --once for a single pass)
   validate-config    Validate the configuration file

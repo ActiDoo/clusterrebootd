@@ -1,21 +1,21 @@
 Cluster Reboot Coordinator for Debian/Ubuntu
 ==========================================
 
-The package installs the `reboot-coordinator` daemon and supporting assets but
+The package installs the `clusterrebootd` daemon and supporting assets but
 leaves the service disabled by default.  After installation:
 
-1. Review `/etc/reboot-coordinator/config.yaml`, customise it for your cluster,
+1. Review `/etc/clusterrebootd/config.yaml`, customise it for your cluster,
    and run:
 
-       sudo /usr/bin/reboot-coordinator validate-config --config /etc/reboot-coordinator/config.yaml
+       sudo /usr/bin/clusterrebootd validate-config --config /etc/clusterrebootd/config.yaml
 
    The shipped template keeps `dry_run: true` so no reboot is attempted until
    configuration is complete.
 2. Enable and start the service once validation succeeds:
 
-       sudo systemctl enable --now reboot-coordinator.service
+       sudo systemctl enable --now clusterrebootd.service
 
-3. Optionally create `/etc/reboot-coordinator/config.d/` drop-ins for future
+3. Optionally create `/etc/clusterrebootd/config.d/` drop-ins for future
    overrides and ensure your cluster health script is deployed on the node.
 
 See the upstream documentation for detailed detector and health gate guidance:

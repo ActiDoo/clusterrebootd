@@ -1,7 +1,7 @@
 #!/bin/sh
 set -eu
 
-CONFIG_DIR="/etc/reboot-coordinator"
+CONFIG_DIR="/etc/clusterrebootd"
 CONFIG_DROPIN="${CONFIG_DIR}/config.d"
 
 case "$1" in

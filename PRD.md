@@ -121,7 +121,7 @@
 
 * **FR‑SD‑1**: Service‑Unit mit `Restart=always` und `After=network-online.target`.
 * **FR‑SD‑2**: Journal‑Logs; Rate‑Limit gegen Log‑Spam.
-* **FR‑SD‑3**: Post‑reboot Marker (z. B. `/run/reboot-coordinator` mit Timestamp).
+* **FR‑SD‑3**: Post‑reboot Marker (z. B. `/run/clusterrebootd` mit Timestamp).
 
 ### 7.6 Observability
 
@@ -131,18 +131,18 @@
 ### 7.7 Sicherheit
 
 * **FR‑SE‑1**: etcd‑TLS (CA/Client‑Cert/Key), konfigurierbar.
-* **FR‑SE‑2**: etcd‑RBAC: Zugriff nur auf Prefix `/<namespace>/reboot-coordinator/`.
+* **FR‑SE‑2**: etcd‑RBAC: Zugriff nur auf Prefix `/<namespace>/clusterrebootd/`.
 * **FR‑SE‑3**: Paketsignaturen, SBOM, (optional) cosign‑Attestations.
 
 ### 7.8 CLI & Exit‑Codes
 
-* `reboot-coordinator status|simulate|validate-config|version`.
+* `clusterrebootd status|simulate|validate-config|version`.
 * Exit‑Codes standardisieren (z. B. 0 ok, 2 config‑fehler, 3 health‑block, 4 lock‑busy …).
 
 ### 7.9 Dry‑Run / Safeguards
 
 * `--dry-run`: Keine Reboots ausführen, nur Logs/Metrics.
-* **Global Kill‑Switch**: Datei/Key, der Reboots deaktiviert (`/etc/reboot-coordinator/disable`).
+* **Global Kill‑Switch**: Datei/Key, der Reboots deaktiviert (`/etc/clusterrebootd/disable`).
 
 ---
 
@@ -173,13 +173,13 @@
 * **Build‑System**: Go ≥ 1.22 (statisch gelinkt), `nfpm` oder `fpm` für Paketbau.
 * **Dateilayout (FHS)**:
 
-  * Binär: `/usr/bin/reboot-coordinator` (statisch gelinkt; entspricht dem `ExecStart` der systemd-Unit)
-  * Config: `/etc/reboot-coordinator/config.yaml` als kommentiertes Template (Conffile) plus reserviertes `/etc/reboot-coordinator/config.d/`
-  * Kill-Switch: `/etc/reboot-coordinator/disable` (wird nicht automatisch angelegt)
-  * Systemd: `/lib/systemd/system/reboot-coordinator.service` (bzw. `/usr/lib/systemd/system` auf rpm-basierten Distros)
-  * tmpfiles.d: `/usr/lib/tmpfiles.d/reboot-coordinator.conf` stellt `/run/reboot-coordinator` mit kontrollierten Rechten bereit
+  * Binär: `/usr/bin/clusterrebootd` (statisch gelinkt; entspricht dem `ExecStart` der systemd-Unit)
+  * Config: `/etc/clusterrebootd/config.yaml` als kommentiertes Template (Conffile) plus reserviertes `/etc/clusterrebootd/config.d/`
+  * Kill-Switch: `/etc/clusterrebootd/disable` (wird nicht automatisch angelegt)
+  * Systemd: `/lib/systemd/system/clusterrebootd.service` (bzw. `/usr/lib/systemd/system` auf rpm-basierten Distros)
+  * tmpfiles.d: `/usr/lib/tmpfiles.d/clusterrebootd.conf` stellt `/run/clusterrebootd` mit kontrollierten Rechten bereit
   * Logging: Ausgabe ins Journal (keine eigenen Logfiles per Default)
-  * Dokumentation: README & Blueprint unter `/usr/share/doc/reboot-coordinator/`
+  * Dokumentation: README & Blueprint unter `/usr/share/doc/clusterrebootd/`
 * **Dependencies**:
 
   * `systemd`
@@ -197,8 +197,8 @@
 
 ### 9.2 Release Artefakte
 
-* `reboot-coordinator_X.Y.Z_amd64.deb`, `arm64.deb`
-* `reboot-coordinator-X.Y.Z-1.x86_64.rpm`, `aarch64.rpm`
+* `clusterrebootd_X.Y.Z_amd64.deb`, `arm64.deb`
+* `clusterrebootd-X.Y.Z-1.x86_64.rpm`, `aarch64.rpm`
 * Checksums (sha256), SBOM, signatures
 
 ---
@@ -285,7 +285,7 @@ health_timeout_sec: 30
 check_interval_sec: 60
 backoff_min_sec: 5
 backoff_max_sec: 60
-lock_key: "/cluster/reboot-coordinator/lock"
+lock_key: "/cluster/clusterrebootd/lock"
 lock_ttl_sec: 90
 etcd_endpoints: ["https://etcd-1:2379","https://etcd-2:2379","https://etcd-3:2379"]
 etcd_tls:
@@ -302,7 +302,7 @@ cluster_policies:
 windows:
   deny: ["Fri 18:00-Mon 08:00", "* 23:00-06:00"]
   allow: ["Tue 22:00-23:00"]
-kill_switch_file: "/etc/reboot-coordinator/disable"
+kill_switch_file: "/etc/clusterrebootd/disable"
 metrics:
   enabled: false
   listen: "127.0.0.1:9090"
@@ -322,7 +322,7 @@ StartLimitIntervalSec=60
 
 [Service]
 User=root
-ExecStart=/usr/local/bin/reboot-coordinator --config /etc/reboot-coordinator/config.yaml
+ExecStart=/usr/local/bin/clusterrebootd --config /etc/clusterrebootd/config.yaml
 Restart=always
 RestartSec=5
 KillSignal=SIGTERM
@@ -373,7 +373,7 @@ WantedBy=multi-user.target
 
 * **Quellcode‑Repo** mit:
 
-  * `cmd/reboot-coordinator/` (Daemon, Go) – produktionsreif
+  * `cmd/clusterrebootd/` (Daemon, Go) – produktionsreif
   * `pkg/` (Config, Detectors, etcd‑Client, Backoff, Logging)
   * `scripts/` (health‑reference, packaging, e2e)
   * `deploy/` (systemd, nfpm.yaml, examples)

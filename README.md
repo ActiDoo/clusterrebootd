@@ -27,7 +27,7 @@ service that favours safety, explicit configuration, and verifiable supply-chain
 ## Repository Layout
 
 ```
-cmd/reboot-coordinator      # CLI entrypoint and daemon bootstrapper
+cmd/clusterrebootd      # CLI entrypoint and daemon bootstrapper
 internal/testutil           # Shared helpers for integration and packaging tests
 pkg/config                  # YAML configuration structures, defaults, and validation
 pkg/detector                # Pluggable reboot-required detectors (file/command)
@@ -61,11 +61,11 @@ examples/config.yaml        # Annotated production-style configuration sample
 
    Alternatively use `make test` which also enforces formatting.
 3. Create a configuration file based on `examples/config.yaml`.  The service defaults to
-   `/etc/reboot-coordinator/config.yaml` but the CLI accepts `--config` for alternate paths.
+   `/etc/clusterrebootd/config.yaml` but the CLI accepts `--config` for alternate paths.
 4. Validate your configuration before running the daemon:
 
    ```bash
-   reboot-coordinator validate-config --config /path/to/config.yaml
+   clusterrebootd validate-config --config /path/to/config.yaml
    ```
 
 5. Start the coordinator once everything validates.  Use `--dry-run` during initial rollouts to exercise the full loop
@@ -73,18 +73,18 @@ examples/config.yaml        # Annotated production-style configuration sample
 
 ## CLI Commands
 
-- `reboot-coordinator run [--config FILE] [--dry-run] [--once]` – start the orchestration loop.  `--once` performs a
+- `clusterrebootd run [--config FILE] [--dry-run] [--once]` – start the orchestration loop.  `--once` performs a
   single diagnostic pass while still honouring lock acquisition and health gating.
-- `reboot-coordinator status [--skip-health] [--skip-lock]` – execute a dry-run orchestration pass and report the outcome
+- `clusterrebootd status [--skip-health] [--skip-lock]` – execute a dry-run orchestration pass and report the outcome
   (detectors, health gate, lock).  Skipping health or lock annotates the environment so scripts are aware of the bypass.
-- `reboot-coordinator simulate` – instantiate detectors, execute them once, and print per-detector summaries without
+- `clusterrebootd simulate` – instantiate detectors, execute them once, and print per-detector summaries without
   contacting etcd or running the health script.
-- `reboot-coordinator validate-config` – parse and validate the YAML configuration.
-- `reboot-coordinator version` – print the build metadata.
+- `clusterrebootd validate-config` – parse and validate the YAML configuration.
+- `clusterrebootd version` – print the build metadata.
 
 ## Observability & Telemetry
 
-`reboot-coordinator run` emits structured JSON logs to stderr for each orchestration stage.  Entries include timestamps,
+`clusterrebootd run` emits structured JSON logs to stderr for each orchestration stage.  Entries include timestamps,
 levels, node identity, event labels, and contextual fields so journald or log shippers can route them without additional
 parsing.  When metrics are enabled the daemon listens on the configured address, serves Prometheus counters/histograms,
 and exports `RC_METRICS_ENDPOINT` into the health script environment so custom checks can verify scrapeability.
