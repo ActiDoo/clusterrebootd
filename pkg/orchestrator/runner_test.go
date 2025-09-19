@@ -219,8 +219,8 @@ func TestRunnerHealthEnvironmentIncludesLockContext(t *testing.T) {
 	locker := &fakeLocker{outcomes: []acquireOutcome{{lease: &fakeLease{}}}}
 
 	runner, err := NewRunner(cfg, engine, healthRunner, locker)
-  
-  if err != nil {
+
+	if err != nil {
 		t.Fatalf("failed to create runner: %v", err)
 	}
 
@@ -228,7 +228,7 @@ func TestRunnerHealthEnvironmentIncludesLockContext(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-  	if outcome.Status != OutcomeReady {
+	if outcome.Status != OutcomeReady {
 		t.Fatalf("expected OutcomeReady, got %s", outcome.Status)
 	}
 
@@ -280,7 +280,7 @@ func TestRunnerBlockedByDenyWindow(t *testing.T) {
 	}
 
 	runner, err := NewRunner(cfg, engine, healthRunner, locker, WithTimeSource(now))
-  
+
 	if err != nil {
 		t.Fatalf("failed to create runner: %v", err)
 	}

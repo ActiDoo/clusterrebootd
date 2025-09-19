@@ -4,7 +4,7 @@
     "dockerfile": "Dockerfile",
     "context": "..",
     "args": {
-      "VARIANT": "1-1.22-bookworm",
+      "VARIANT": "1-1.23-bookworm",
       "ETCD_VERSION": "3.6.4",
       "ETCD_SHA256": "4d5f3101daa534e45ccaf3eec8d21c19b7222db377bcfd5e5a9144155238c105",
       "NFPM_VERSION": "2.43.1",
