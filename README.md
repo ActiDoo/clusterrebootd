@@ -144,6 +144,27 @@ Future milestones will extend the loop with structured logging, observability
 integrations, packaging assets, and the full CI/CD pipeline described in the
 PRD.
 
+### Exit Codes
+
+The CLI normalises exit codes so automation and operators can reason about the
+daemon's state without parsing logs:
+
+| Code | Meaning | Returned By |
+| ---- | ------- | ----------- |
+| 0    | Success. No reboot required, prerequisites satisfied, or configuration validated. | All commands on success, including `run --once` and `status` when they report `no_action`, `recheck_cleared`, or `ready`. |
+| 1    | Runtime failure. Setup or orchestration error prevented evaluation. | `run`, `run --once`, `status`, `simulate`. |
+| 2    | Invalid configuration. | `run`, `status`, `validate-config`. |
+| 3    | Blocked by the health script (pre- or post-lock). | `run --once`, `status`, and long-running `run` when terminated while health is blocking. |
+| 4    | Lock contention prevented progress. | `run --once`, `status`, and long-running `run` when terminated while unable to acquire the lock. |
+| 5    | Kill switch present. | `run --once`, `status`, and long-running `run` when terminated while the kill switch is active. |
+| 6    | Detector evaluation failed during simulation. | `simulate`. |
+| 64   | CLI usage error (unknown command or flag parsing failure). | All commands. |
+
+The long-running `run` mode applies the same mappings when it exits due to a
+signal: if the last observed outcome was blocked by health, lock contention, or
+the kill switch, the process returns that exit code so supervisors can reflect
+the blocking condition.
+
 ### Observability
 
 Running `reboot-coordinator run` now emits structured JSON logs to stderr for
