@@ -89,6 +89,29 @@ artefacts for human review via the workflow summary.
   SBOMs, checksums, signatures, and public key copy) is uploaded via
   `actions/upload-artifact` for manual inspection.
 
+## Stage 3 – Release Automation
+
+Release publication now rides on a dedicated workflow that runs whenever a tag
+matching `v*` is pushed or when operators trigger it manually via
+`workflow_dispatch`.  The job reuses the pinned Go toolchain and packaging
+dependencies from the CI stages, then:
+
+- Derives the semantic version from the tag (dropping the leading `v` when
+  present) so Debian/RPM metadata match the release identifier.
+- Materialises cosign signing material from base64-encoded repository secrets
+  (`RELEASE_COSIGN_KEY`, `RELEASE_COSIGN_PUB`, and optionally
+  `RELEASE_COSIGN_PASSWORD`).  When secrets are omitted the workflow emits
+  unsigned packages but still generates checksums and SBOMs.
+- Executes `make package` and `packaging/scripts/verify_artifacts.sh` to build
+  and validate artefacts exactly as the packaging CI job does.
+- Uses `actions/github-script` to call GitHub’s `generateReleaseNotes` API so
+  the release body captures the changelog since the previously published
+  release.
+- Creates (or updates) the GitHub Release for the tag and uploads every file in
+  `dist/packages/`—packages, SBOMs, aggregated checksum manifests, per-artefact
+  hashes, and signatures—deleting stale assets before re-upload so reruns remain
+  idempotent.
+
 ## Security, Stability, and Performance Considerations
 
 - **Supply Chain:** All reusable actions are referenced by commit SHA rather than
@@ -115,8 +138,7 @@ artefacts for human review via the workflow summary.
 - Layer containerised smoke tests that install the produced packages inside
   representative distributions to validate maintainer scripts and service
   wiring.
-- Extend release automation to publish artefacts and provenance to GitHub
-  Releases, wiring in cosign attestations once production signing keys are
-  available.
+- Extend the release workflow to publish SLSA/Sigstore provenance alongside the
+  existing SBOMs once production signing keys are wired in.
 - Integrate integration tests against the dev-container etcd instance to cover
   lock acquisition and health gate behaviour.

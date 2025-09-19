@@ -69,6 +69,11 @@
   `staticcheck`, and `go test ./...`, then build `.deb`/`.rpm` artefacts with
   SBOMs, checksums, and cosign signatures on every push/pull request,
   uploading the `dist/packages/` directory for review.
+- The release workflow builds tagged revisions with the verified packaging
+  toolchain, generates release notes from the commits since the previous tag,
+  and uploads packages, SBOMs, checksums, and signatures directly to the
+  corresponding GitHub Release while honouring optional cosign secrets for
+  signing.
 
 ## Next Up
 - Measure CI run times with caching/static analysis enabled and tune job
@@ -77,9 +82,8 @@
   distributions to validate maintainer scripts and service wiring.
 
 ## Backlog
-- Promote the packaging workflow into a release pipeline that publishes
-  artefacts, provenance, and signatures to GitHub Releases once production
-  keys are available.
+- Extend the release workflow with Sigstore/SLSA provenance once production
+  signing keys are wired in.
 - Expand operator documentation beyond the sample config to include install
   guides, health script best practices, and troubleshooting once the reference
   example is reviewed.

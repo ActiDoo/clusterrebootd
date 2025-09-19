@@ -79,6 +79,14 @@ cosign signatures, verifies them with
 review.  All actions are pinned by commit SHA and the workflow continues to use
 read-only permissions to preserve repository integrity.
 
+Tagging a commit with `v*` (or invoking the release workflow manually) now
+builds the packages again, generates release notes from the commits since the
+previous release via GitHub's API, and publishes the packages, SBOMs, checksum
+manifests, and optional cosign signatures directly to the GitHub Release.
+Provide `RELEASE_COSIGN_KEY`/`RELEASE_COSIGN_PUB` secrets (base64-encoded) and a
+`RELEASE_COSIGN_PASSWORD` secret when signing should be enabled; otherwise the
+workflow ships unsigned artefacts while still verifying checksums and SBOMs.
+
 ## Example Configuration
 
 The repository ships an annotated sample at `examples/config.yaml` that
