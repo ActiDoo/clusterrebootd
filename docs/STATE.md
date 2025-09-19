@@ -55,6 +55,9 @@
 - Packaging assets are now exercised by automated tests that verify the config
   template's safe defaults, the systemd unit contract, maintainer script
   safeguards, and the `nfpm` file layout so regressions are caught early.
+- Packaging tests now build the Debian artefact with `nfpm` and assert the
+  binary, systemd unit, configuration template, and tmpfiles entry are packaged
+  correctly so overrides cannot silently drop essential files during installs.
 - Containerised smoke tests now build the Debian and RPM packages via the `nfpm`
   configuration and install them inside Debian, Ubuntu, and Rocky Linux
   containers.  The suite validates package manager integration, ensures the
