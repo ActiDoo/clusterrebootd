@@ -19,8 +19,9 @@
 - The orchestration loop now retries transient runtime failures with an
   exponential backoff and listens for SIGINT/SIGTERM so operators can stop the
   daemon cleanly when managed by service supervisors.
-- A reproducible dev container (Go 1.22 with etcd 3.6.4) is available for local
-  development and integration testing.
+- A reproducible dev container (Go 1.22 with etcd 3.6.4 and nfpm 2.43.1) is
+  available for local development, packaging experiments, and integration
+  testing.
 - CLI run mode now wires the reporter into a JSON logger on stderr and an
   optional Prometheus metrics listener, exporting the address to the health
   script environment for runtime validation.
