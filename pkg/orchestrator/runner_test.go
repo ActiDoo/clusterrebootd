@@ -206,6 +206,106 @@ func TestRunnerKillSwitchActive(t *testing.T) {
 	}
 }
 
+func TestRunnerBlockedByDenyWindow(t *testing.T) {
+	cfg := baseConfig()
+	cfg.Windows.Deny = []string{"Mon 00:00-Tue 00:00"}
+	engine := &fakeEngine{steps: []evalStep{{requires: true}}}
+	healthRunner := &fakeHealth{}
+	locker := &fakeLocker{}
+
+	now := func() time.Time {
+		return time.Date(2024, time.March, 4, 12, 0, 0, 0, time.UTC)
+	}
+
+	runner, err := NewRunner(cfg, engine, healthRunner, locker, WithTimeSource(now))
+	if err != nil {
+		t.Fatalf("failed to create runner: %v", err)
+	}
+
+	outcome, err := runner.RunOnce(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if outcome.Status != OutcomeWindowDenied {
+		t.Fatalf("expected OutcomeWindowDenied, got %s", outcome.Status)
+	}
+	if engine.calls != 0 {
+		t.Fatalf("expected detectors to be skipped, got %d calls", engine.calls)
+	}
+	if healthRunner.calls != 0 {
+		t.Fatalf("expected health script to be skipped, got %d calls", healthRunner.calls)
+	}
+	if locker.calls != 0 {
+		t.Fatalf("expected no lock attempts, got %d", locker.calls)
+	}
+	if outcome.Message != "blocked by deny window \"Mon 00:00-Tue 00:00\"" {
+		t.Fatalf("unexpected message: %q", outcome.Message)
+	}
+}
+
+func TestRunnerOutsideAllowWindow(t *testing.T) {
+	cfg := baseConfig()
+	cfg.Windows.Allow = []string{"Tue 22:00-23:00"}
+	engine := &fakeEngine{steps: []evalStep{{requires: true}}}
+	healthRunner := &fakeHealth{}
+	locker := &fakeLocker{}
+
+	now := func() time.Time {
+		return time.Date(2024, time.March, 4, 10, 0, 0, 0, time.UTC)
+	}
+
+	runner, err := NewRunner(cfg, engine, healthRunner, locker, WithTimeSource(now))
+	if err != nil {
+		t.Fatalf("failed to create runner: %v", err)
+	}
+
+	outcome, err := runner.RunOnce(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if outcome.Status != OutcomeWindowOutside {
+		t.Fatalf("expected OutcomeWindowOutside, got %s", outcome.Status)
+	}
+	if engine.calls != 0 {
+		t.Fatalf("expected detectors to be skipped, got %d calls", engine.calls)
+	}
+	if healthRunner.calls != 0 {
+		t.Fatalf("expected health script to be skipped, got %d calls", healthRunner.calls)
+	}
+	if locker.calls != 0 {
+		t.Fatalf("expected no lock attempts, got %d", locker.calls)
+	}
+}
+
+func TestRunnerWithinAllowWindow(t *testing.T) {
+	cfg := baseConfig()
+	cfg.Windows.Allow = []string{"Tue 22:00-23:00"}
+	lease := &fakeLease{}
+	engine := &fakeEngine{steps: []evalStep{{requires: true, results: []detector.Result{{Name: "pre"}}}, {requires: true, results: []detector.Result{{Name: "post"}}}}}
+	healthRunner := &fakeHealth{steps: []healthStep{{result: health.Result{ExitCode: 0}}, {result: health.Result{ExitCode: 0}}}}
+	locker := &fakeLocker{outcomes: []acquireOutcome{{lease: lease}}}
+
+	now := func() time.Time {
+		return time.Date(2024, time.March, 5, 22, 30, 0, 0, time.UTC)
+	}
+
+	runner, err := NewRunner(cfg, engine, healthRunner, locker, WithTimeSource(now))
+	if err != nil {
+		t.Fatalf("failed to create runner: %v", err)
+	}
+
+	outcome, err := runner.RunOnce(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if outcome.Status != OutcomeReady {
+		t.Fatalf("expected OutcomeReady, got %s", outcome.Status)
+	}
+	if !lease.released {
+		t.Fatal("expected lease to be released")
+	}
+}
+
 func TestRunnerHealthBlocksBeforeLock(t *testing.T) {
 	cfg := baseConfig()
 	engine := &fakeEngine{steps: []evalStep{{requires: true, results: []detector.Result{{Name: "stub"}}}}}

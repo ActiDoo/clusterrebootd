@@ -73,13 +73,13 @@ demonstrates how to wire the implemented features together:
 - Two reboot detectors: a Debian/Ubuntu marker file and the RHEL `needs-restarting`
   command with a guard for its reboot-required exit code.
 - Cluster guardrails: health script location and timeout, an operator-controlled
-  kill switch file, and cluster policy hints (minimum healthy nodes and
-  designated fallback nodes) that are exported to the health script environment
-  via `RC_CLUSTER_MIN_HEALTHY_FRACTION`, `RC_CLUSTER_MIN_HEALTHY_ABSOLUTE`,
-  `RC_CLUSTER_FORBID_IF_ONLY_FALLBACK_LEFT`, and
-  `RC_CLUSTER_FALLBACK_NODES`.  If reboot windows are configured they are
-  injected through `RC_WINDOWS_ALLOW` and `RC_WINDOWS_DENY` so scripts can
-  honour operator-defined maintenance schedules.
+  kill switch file, cluster policy hints (minimum healthy nodes and designated
+  fallback nodes), and maintenance windows.  Cron-like `windows.deny`
+  expressions short-circuit the orchestration loop before detector execution
+  while `windows.allow` restricts runs to explicitly approved slots.  The
+  configured windows are also exported to the health script environment via
+  `RC_WINDOWS_ALLOW` and `RC_WINDOWS_DENY` so scripts can remain consistent with
+  the daemon's enforcement.
 - Distributed coordination: three etcd endpoints, an explicit namespace,
   lock key, and optional mutual TLS credentials.
 - Observability: metrics listener enabled so the daemon injects
