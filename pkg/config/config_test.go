@@ -83,7 +83,7 @@ func TestDetectorValidation(t *testing.T) {
 		CheckIntervalSec: 30,
 		BackoffMinSec:    5,
 		BackoffMaxSec:    60,
-		LockKey:          "/cluster/reboot-coordinator/lock",
+		LockKey:          "/cluster/clusterrebootd/lock",
 	}
 	if err := cfg.Validate(); err == nil {
 		t.Fatal("expected validation to fail for invalid detector")

@@ -2,8 +2,8 @@
 #
 # The packaged defaults intentionally leave critical fields blank and keep
 # dry_run enabled so the service will not execute reboots until operators
-# review and customise the configuration.  Run `reboot-coordinator
-# validate-config --config /etc/reboot-coordinator/config.yaml` after editing
+# review and customise the configuration.  Run `clusterrebootd
+# validate-config --config /etc/clusterrebootd/config.yaml` after editing
 # to confirm the daemon accepts the file.
 
 # Prevent the daemon from issuing a reboot command until configuration is
@@ -37,7 +37,7 @@ backoff_min_sec: 5
 backoff_max_sec: 60
 
 # Global kill switch that blocks reboots when the file exists.
-kill_switch_file: /etc/reboot-coordinator/disable
+kill_switch_file: /etc/clusterrebootd/disable
 
 # etcd configuration guarding concurrent reboots.
 etcd_endpoints: []

@@ -11,7 +11,7 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-const DefaultConfigPath = "/etc/reboot-coordinator/config.yaml"
+const DefaultConfigPath = "/etc/clusterrebootd/config.yaml"
 
 // Config represents the runtime configuration for the reboot coordinator daemon.
 type Config struct {
@@ -207,7 +207,7 @@ func (c *Config) applyDefaults() {
 		c.BackoffMaxSec = 60
 	}
 	if strings.TrimSpace(c.LockKey) == "" {
-		c.LockKey = "/cluster/reboot-coordinator/lock"
+		c.LockKey = "/cluster/clusterrebootd/lock"
 	}
 	if c.LockTTLSec == 0 {
 		c.LockTTLSec = 90
@@ -216,7 +216,7 @@ func (c *Config) applyDefaults() {
 		c.RebootCommand = []string{"/sbin/shutdown", "-r", "now", "coordinated kernel reboot"}
 	}
 	if c.KillSwitchFile == "" {
-		c.KillSwitchFile = "/etc/reboot-coordinator/disable"
+		c.KillSwitchFile = "/etc/clusterrebootd/disable"
 	}
 	if c.Metrics.Listen == "" {
 		c.Metrics.Listen = "127.0.0.1:9090"

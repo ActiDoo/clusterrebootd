@@ -58,8 +58,10 @@
 - Containerised smoke tests now build the Debian and RPM packages via the `nfpm`
   configuration and install them inside Debian, Ubuntu, and Rocky Linux
   containers.  The suite validates package manager integration, ensures the
-  binary starts, and confirms packaged assets land at the expected paths while
-  gracefully skipping when no container runtime is available.
+  binary starts, boots a transient systemd instance with a drop-in override to
+  confirm the packaged unit launches successfully, and confirms assets land at
+  the expected paths while gracefully skipping when no container runtime is
+  available.
 - A top-level `Makefile` now standardises local builds, cross-compilation for
   `amd64`/`arm64`, and wraps `nfpm` so developers can reproducibly stage
   binaries in `dist/` and generate `.deb`/`.rpm` packages without ad-hoc
@@ -96,10 +98,8 @@
 ## Backlog
 - Extend the release workflow with Sigstore/SLSA provenance once production
   signing keys are wired in.
-- Extend the smoke tests to exercise service enablement under systemd once a
-  container harness that can launch `systemd` safely is available.
 - Implement the post-reboot marker described in FR-SD-3 so successful reboots
-  leave an auditable timestamp under `/run/reboot-coordinator`.
+  leave an auditable timestamp under `/run/clusterrebootd`.
 
 ## Open Questions
 - Finalise the exact etcd keyspace layout and RBAC policy for the distributed lock.

@@ -1,6 +1,6 @@
 SHELL := /bin/bash
 
-BINARY_NAME := reboot-coordinator
+BINARY_NAME := clusterrebootd
 DIST_DIR := dist
 BINARY_PATH := $(DIST_DIR)/$(BINARY_NAME)
 NFPM ?= nfpm

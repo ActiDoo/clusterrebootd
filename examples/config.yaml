@@ -26,15 +26,15 @@ backoff_min_sec: 5
 backoff_max_sec: 60
 
 # Global kill switch that operators can create to block reboots quickly.
-kill_switch_file: /etc/reboot-coordinator/disable
+kill_switch_file: /etc/clusterrebootd/disable
 
 # Distributed lock guarding concurrent reboots.
 etcd_endpoints:
   - 10.0.0.10:2379
   - 10.0.0.11:2379
   - 10.0.0.12:2379
-etcd_namespace: /prod/reboot-coordinator
-lock_key: /prod/reboot-coordinator/lock
+etcd_namespace: /prod/clusterrebootd
+lock_key: /prod/clusterrebootd/lock
 lock_ttl_sec: 120
 
 # Enable mutual TLS when connecting to etcd.
