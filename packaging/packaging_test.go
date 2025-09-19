@@ -83,8 +83,8 @@ type nfpmConfig struct {
 			Scripts    struct {
 				Preinstall  string `yaml:"preinstall"`
 				Postinstall string `yaml:"postinstall"`
-				Prerm       string `yaml:"prerm"`
-				Postrm      string `yaml:"postrm"`
+				Preremove   string `yaml:"preremove"`
+				Postremove  string `yaml:"postremove"`
 			} `yaml:"scripts"`
 		} `yaml:"deb"`
 		Rpm struct {
@@ -361,11 +361,11 @@ func TestNFPMConfigurationMatchesBlueprint(t *testing.T) {
 	if cfg.Overrides.Deb.Scripts.Postinstall != "./packaging/scripts/deb/postinst" {
 		t.Fatalf("unexpected Debian postinst script %q", cfg.Overrides.Deb.Scripts.Postinstall)
 	}
-	if cfg.Overrides.Deb.Scripts.Prerm != "./packaging/scripts/deb/prerm" {
-		t.Fatalf("unexpected Debian prerm script %q", cfg.Overrides.Deb.Scripts.Prerm)
+	if cfg.Overrides.Deb.Scripts.Preremove != "./packaging/scripts/deb/prerm" {
+		t.Fatalf("unexpected Debian preremove script %q", cfg.Overrides.Deb.Scripts.Preremove)
 	}
-	if cfg.Overrides.Deb.Scripts.Postrm != "./packaging/scripts/deb/postrm" {
-		t.Fatalf("unexpected Debian postrm script %q", cfg.Overrides.Deb.Scripts.Postrm)
+	if cfg.Overrides.Deb.Scripts.Postremove != "./packaging/scripts/deb/postrm" {
+		t.Fatalf("unexpected Debian postremove script %q", cfg.Overrides.Deb.Scripts.Postremove)
 	}
 
 	if !contains(cfg.Overrides.Rpm.Depends, "systemd") {
