@@ -35,6 +35,9 @@
 - The health script base environment now includes cluster policy thresholds,
   fallback node lists, and configured maintenance windows so gating logic can
   enforce operator intent without re-reading the configuration file.
+- Reboot command execution now expands the same environment placeholders (e.g.
+  `RC_NODE_NAME`) so the logged and invoked command reflects the active node
+  context without depending on shell-specific substitution.
 - Health script executions are annotated with runtime lock context via
   `RC_PHASE`, `RC_LOCK_ENABLED`, `RC_LOCK_HELD`, and `RC_LOCK_ATTEMPTS`, giving
   scripts enough detail to reason about contention and ensure post-lock checks

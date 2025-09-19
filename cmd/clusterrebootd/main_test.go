@@ -732,7 +732,7 @@ func TestBuildBaseEnvironmentIncludesPolicyContext(t *testing.T) {
 		},
 	}
 
-	env := buildBaseEnvironment(cfg)
+	env := cfg.BaseEnvironment()
 
 	if got := env["RC_NODE_NAME"]; got != cfg.NodeName {
 		t.Fatalf("expected RC_NODE_NAME %q, got %q", cfg.NodeName, got)
@@ -766,7 +766,7 @@ func TestBuildBaseEnvironmentIncludesPolicyContext(t *testing.T) {
 func TestBuildBaseEnvironmentOmitsUnsetPolicyContext(t *testing.T) {
 	cfg := &config.Config{}
 
-	env := buildBaseEnvironment(cfg)
+	env := cfg.BaseEnvironment()
 
 	if _, ok := env["RC_CLUSTER_MIN_HEALTHY_FRACTION"]; ok {
 		t.Fatalf("expected RC_CLUSTER_MIN_HEALTHY_FRACTION to be absent")

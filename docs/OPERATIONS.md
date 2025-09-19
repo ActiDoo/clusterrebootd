@@ -52,7 +52,7 @@ it for your environment, and run the daemon with `clusterrebootd run
 2. **Define the health script** – Point `health_script` at an absolute path and
    configure `health_timeout_sec` so the runner can cancel long-running checks.
    The orchestration loop executes the script before and after lock acquisition,
-   injecting context that indicates the current phase and lock state.【F:examples/config.yaml†L39-L55】【F:cmd/clusterrebootd/main.go†L384-L409】
+  injecting context that indicates the current phase and lock state.【F:examples/config.yaml†L39-L55】【F:pkg/orchestrator/runner.go†L485-L500】
 3. **Configure the distributed lock** – Supply at least one etcd endpoint,
    namespace, and `lock_key`; ensure `lock_ttl_sec` exceeds the health timeout so
    the lease outlives the slowest permissible health check.  Enable mutual TLS by
@@ -87,13 +87,13 @@ Health scripts are the final safeguard before a reboot.  Follow these practices:
 - **Use the injected environment** – The coordinator exports static context such
   as `RC_NODE_NAME`, `RC_DRY_RUN`, `RC_LOCK_KEY`, etcd endpoints, kill switch
   location, cluster policy thresholds, fallback node list, and maintenance
-  windows so scripts do not need to re-read the YAML file.【F:cmd/clusterrebootd/main.go†L381-L409】
+  windows so scripts do not need to re-read the YAML file.【F:pkg/config/config.go†L230-L263】
 - **React to runtime hints** – Each invocation adds `RC_PHASE` (`pre-lock` or
   `post-lock`), `RC_LOCK_ENABLED`, `RC_LOCK_HELD`, and `RC_LOCK_ATTEMPTS` so
   scripts can distinguish dry runs, skipped locks, and contention scenarios.
   Diagnostics invoked with `status --skip-health` or `--skip-lock` set
   `RC_SKIP_HEALTH`/`RC_SKIP_LOCK` to `true`, allowing scripts to short-circuit
-  optional checks when operators intentionally bypass them.【F:cmd/clusterrebootd/main.go†L293-L322】【F:pkg/orchestrator/runner.go†L430-L466】
+  optional checks when operators intentionally bypass them.【F:cmd/clusterrebootd/main.go†L298-L305】【F:pkg/orchestrator/runner.go†L485-L500】
 - **Return meaningful exit codes** – Exit `0` to allow the reboot, non-zero to
   block it.  Write concise status details to stdout/stderr; they are captured in
   the JSON logs and CLI output for incident response.【F:cmd/clusterrebootd/main.go†L482-L517】
@@ -164,7 +164,7 @@ backoff, aligning with the orchestrator's internal retry logic.【F:docs/PACKAGI
 | CLI exits with code `2` and `invalid configuration` | Schema or semantic error (e.g. missing node name, TTL too small) | Run `validate-config` and fix the listed problems; the loader aggregates all validation failures to minimise iterations.【F:pkg/config/config.go†L90-L171】 |
 | `status` reports `health_blocked` with non-zero exit codes | Health script failed or timed out | Review stdout/stderr in the command output, inspect the script logs, and adjust cluster policy checks or timeouts as needed.【F:cmd/clusterrebootd/main.go†L482-L517】 |
 | `status` reports `lock_unavailable` | etcd unreachable or contended | Confirm network reachability, validate TLS credentials, and inspect the lock key metadata (node, PID, timestamp) to identify the current holder before retrying.【F:cmd/clusterrebootd/main.go†L193-L252】【F:pkg/orchestrator/runner.go†L133-L211】 |
-| Orchestration skipped with `window_denied`/`window_outside_allow` | Current time falls inside a deny window or outside all allow windows | Adjust the `windows` expressions or wait for the next permitted slot; the decision is also exported to the health script via maintenance window environment variables.【F:pkg/windows/windows.go†L29-L123】【F:cmd/clusterrebootd/main.go†L381-L409】 |
+| Orchestration skipped with `window_denied`/`window_outside_allow` | Current time falls inside a deny window or outside all allow windows | Adjust the `windows` expressions or wait for the next permitted slot; the decision is also exported to the health script via maintenance window environment variables.【F:pkg/windows/windows.go†L29-L123】【F:pkg/config/config.go†L230-L263】 |
 | Metrics server fails to start | Address already in use or invalid listen string | Update `metrics.listen` to a free address/port combination and restart the daemon; the listener prints an error during startup when binding fails.【F:cmd/clusterrebootd/main.go†L193-L252】 |
 
 ## Additional References
