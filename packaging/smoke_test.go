@@ -228,19 +228,22 @@ func buildSmokeTestPackages(t testing.TB) map[string]string {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 
-	if err := os.MkdirAll("dist", 0o755); err != nil {
+	root := repoRoot(t)
+	distDir := filepath.Join(root, "dist")
+	if err := os.MkdirAll(distDir, 0o755); err != nil {
 		t.Fatalf("failed to create dist directory: %v", err)
 	}
 
-	binaryPath := filepath.Join("dist", "clusterrebootd")
+	binaryPath := filepath.Join(distDir, "clusterrebootd")
 	build := exec.CommandContext(ctx, "go", "build", "-trimpath", "-ldflags", "-s -w", "-o", binaryPath, "./cmd/clusterrebootd")
+	build.Dir = root
 	build.Env = append(os.Environ(), "CGO_ENABLED=0", "GOOS=linux", "GOARCH=amd64")
 	if output, err := build.CombinedOutput(); err != nil {
 		t.Fatalf("failed to build clusterrebootd binary: %v\n%s", err, output)
 	}
 
 	t.Cleanup(func() {
-		_ = os.RemoveAll("dist")
+		_ = os.RemoveAll(distDir)
 	})
 
 	version := "0.0.0-smoke"
@@ -268,7 +271,10 @@ func buildPackage(t testing.TB, outputDir, format, arch, version string) string 
 		}
 	}
 
-	cfg, err := nfpm.ParseFileWithEnvMapping("packaging/nfpm.yaml", mapping)
+	root := repoRoot(t)
+	cfgPath := filepath.Join(root, "packaging", "nfpm.yaml")
+
+	cfg, err := nfpm.ParseFileWithEnvMapping(cfgPath, mapping)
 	if err != nil {
 		t.Fatalf("failed to parse nfpm configuration: %v", err)
 	}
@@ -295,6 +301,19 @@ func buildPackage(t testing.TB, outputDir, format, arch, version string) string 
 	}
 	defer file.Close()
 
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("failed to determine working directory: %v", err)
+	}
+	if err := os.Chdir(root); err != nil {
+		t.Fatalf("failed to change to repository root: %v", err)
+	}
+	defer func() {
+		if err := os.Chdir(cwd); err != nil {
+			t.Fatalf("failed to restore working directory: %v", err)
+		}
+	}()
+
 	if err := packager.Package(info, file); err != nil {
 		t.Fatalf("failed to build %s package: %v", format, err)
 	}
@@ -309,4 +328,18 @@ func buildPackage(t testing.TB, outputDir, format, arch, version string) string 
 	}
 
 	return abs
+}
+
+func repoRoot(t testing.TB) string {
+	t.Helper()
+
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("failed to determine working directory: %v", err)
+	}
+	root := filepath.Clean(filepath.Join(cwd, ".."))
+	if _, err := os.Stat(filepath.Join(root, "go.mod")); err != nil {
+		t.Fatalf("failed to locate repository root from %s: %v", cwd, err)
+	}
+	return root
 }

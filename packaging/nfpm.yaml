@@ -32,6 +32,11 @@ contents:
     dst: /usr/share/licenses/clusterrebootd/LICENSE
     file_info:
       mode: 0644
+  - src: ./packaging/docs/README.Debian
+    dst: /usr/share/doc/clusterrebootd/README.Debian
+    packager: deb
+    file_info:
+      mode: 0644
   - src: ./docs/PACKAGING_BLUEPRINT.md
     dst: /usr/share/doc/clusterrebootd/PACKAGING_BLUEPRINT.md
     file_info:
@@ -42,11 +47,6 @@ overrides:
       - systemd
     recommends:
       - ca-certificates
-    contents:
-      - src: ./packaging/docs/README.Debian
-        dst: /usr/share/doc/clusterrebootd/README.Debian
-        file_info:
-          mode: 0644
     scripts:
       preinstall: ./packaging/scripts/deb/preinst
       postinstall: ./packaging/scripts/deb/postinst
