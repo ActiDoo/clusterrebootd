@@ -1,0 +1,285 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Existing tag to release'
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Publish release artefacts
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+    env:
+      GO_VERSION: '1.23.x'
+
+    steps:
+      - name: Determine release metadata
+        id: meta
+        run: |
+          set -euo pipefail
+          if [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" ]]; then
+            TAG="${{ github.event.inputs.tag }}"
+            if [[ -z "${TAG}" ]]; then
+              echo "Manual runs require the 'tag' input." >&2
+              exit 1
+            fi
+          else
+            TAG="${GITHUB_REF_NAME}"
+          fi
+
+          if [[ "${TAG}" =~ ^v(.*) ]]; then
+            VERSION="${BASH_REMATCH[1]}"
+          else
+            VERSION="${TAG}"
+          fi
+
+          echo "Releasing tag ${TAG} (version ${VERSION})"
+          echo "tag=${TAG}" >> "${GITHUB_OUTPUT}"
+          echo "version=${VERSION}" >> "${GITHUB_OUTPUT}"
+
+      - name: Check out repository
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8
+        with:
+          ref: ${{ steps.meta.outputs.tag }}
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@44694675825211faa026b3c33043df3e48a5fa00
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      - name: Cache Go modules
+        uses: actions/cache@0400d5f644dc74513175e3cd8d07132dd4860809
+        with:
+          path: |
+            ~/.cache/go-build
+            ~/go/pkg/mod
+          key: ${{ runner.os }}-go-${{ hashFiles('go.sum') }}
+          restore-keys: |
+            ${{ runner.os }}-go-
+
+      - name: Install packaging toolchain
+        run: |
+          set -euo pipefail
+          mkdir -p "${HOME}/bin"
+          echo "${HOME}/bin" >> "${GITHUB_PATH}"
+
+          NFPM_VERSION=2.37.0
+          NFPM_TARBALL="nfpm_${NFPM_VERSION}_Linux_x86_64.tar.gz"
+          curl -sSL "https://github.com/goreleaser/nfpm/releases/download/v${NFPM_VERSION}/${NFPM_TARBALL}" -o "${NFPM_TARBALL}"
+          curl -sSL "https://github.com/goreleaser/nfpm/releases/download/v${NFPM_VERSION}/checksums.txt" -o nfpm_checksums.txt
+          grep "  ${NFPM_TARBALL}$" nfpm_checksums.txt > nfpm_checksums_filtered.txt
+          sha256sum --check nfpm_checksums_filtered.txt
+          tar -xf "${NFPM_TARBALL}"
+          install -m 0755 nfpm "${HOME}/bin/nfpm"
+
+          SYFT_VERSION=1.14.0
+          SYFT_TARBALL="syft_${SYFT_VERSION}_linux_amd64.tar.gz"
+          curl -sSL "https://github.com/anchore/syft/releases/download/v${SYFT_VERSION}/${SYFT_TARBALL}" -o "${SYFT_TARBALL}"
+          curl -sSL "https://github.com/anchore/syft/releases/download/v${SYFT_VERSION}/syft_${SYFT_VERSION}_checksums.txt" -o syft_checksums.txt
+          grep "  ${SYFT_TARBALL}$" syft_checksums.txt > syft_checksums_filtered.txt
+          sha256sum --check syft_checksums_filtered.txt
+          tar -xf "${SYFT_TARBALL}"
+          install -m 0755 syft "${HOME}/bin/syft"
+
+          COSIGN_VERSION=2.2.4
+          COSIGN_BIN="cosign-linux-amd64"
+          curl -sSL "https://github.com/sigstore/cosign/releases/download/v${COSIGN_VERSION}/cosign_checksums.txt" -o cosign_checksums.txt
+          curl -sSL "https://github.com/sigstore/cosign/releases/download/v${COSIGN_VERSION}/${COSIGN_BIN}" -o "${COSIGN_BIN}"
+          grep "  ${COSIGN_BIN}$" cosign_checksums.txt > cosign_checksums_filtered.txt
+          sha256sum --check cosign_checksums_filtered.txt
+          install -m 0755 "${COSIGN_BIN}" "${HOME}/bin/cosign"
+
+      - name: Materialise cosign keypair
+        if: ${{ secrets.RELEASE_COSIGN_KEY != '' }}
+        env:
+          COSIGN_KEY_B64: ${{ secrets.RELEASE_COSIGN_KEY }}
+          COSIGN_PUB_B64: ${{ secrets.RELEASE_COSIGN_PUB }}
+        run: |
+          set -euo pipefail
+          echo "${COSIGN_KEY_B64}" | base64 --decode > release.cosign.key
+          chmod 0600 release.cosign.key
+          if [[ -n "${COSIGN_PUB_B64}" ]]; then
+            echo "${COSIGN_PUB_B64}" | base64 --decode > release.cosign.pub
+            chmod 0644 release.cosign.pub
+          fi
+
+      - name: Build release packages
+        env:
+          COSIGN_PASSWORD: ${{ secrets.RELEASE_COSIGN_PASSWORD }}
+        run: |
+          set -euo pipefail
+          make clean
+          signing_key=""
+          signing_pub=""
+          if [[ -f release.cosign.key ]]; then
+            signing_key="release.cosign.key"
+          fi
+          if [[ -f release.cosign.pub ]]; then
+            signing_pub="release.cosign.pub"
+          fi
+          make package VERSION="${{ steps.meta.outputs.version }}" SIGNING_KEY="${signing_key}" SIGNING_PUBKEY="${signing_pub}"
+
+      - name: Verify release artefacts
+        run: |
+          set -euo pipefail
+          if [[ -f release.cosign.pub ]]; then
+            export COSIGN_PUBLIC_KEY=release.cosign.pub
+          fi
+          packaging/scripts/verify_artifacts.sh dist/packages
+
+      - name: Capture target commit
+        id: commit
+        run: |
+          set -euo pipefail
+          echo "sha=$(git rev-parse HEAD)" >> "${GITHUB_OUTPUT}"
+
+      - name: Generate release notes
+        id: notes
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd
+        env:
+          TAG_NAME: ${{ steps.meta.outputs.tag }}
+          TARGET_COMMIT: ${{ steps.commit.outputs.sha }}
+        with:
+          script: |
+            const { owner, repo } = context.repo;
+            const tag = process.env.TAG_NAME;
+            const target = process.env.TARGET_COMMIT;
+            const releases = await github.paginate(
+              github.rest.repos.listReleases,
+              { owner, repo, per_page: 100 }
+            );
+            const previous = releases.find(rel => rel.tag_name !== tag);
+            if (previous) {
+              core.info(`Previous release detected: ${previous.tag_name}`);
+            } else {
+              core.info('No previous release detected; generating notes from repository start.');
+            }
+            const params = {
+              owner,
+              repo,
+              tag_name: tag,
+              target_commitish: target,
+            };
+            if (previous && previous.tag_name) {
+              params.previous_tag_name = previous.tag_name;
+            }
+            const notes = await github.rest.repos.generateReleaseNotes(params);
+            core.setOutput('body', notes.data.body || '');
+
+      - name: Create or update GitHub release
+        id: create_release
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd
+        env:
+          TAG_NAME: ${{ steps.meta.outputs.tag }}
+          TARGET_COMMIT: ${{ steps.commit.outputs.sha }}
+          RELEASE_BODY: ${{ steps.notes.outputs.body }}
+        with:
+          script: |
+            const { owner, repo } = context.repo;
+            const tag = process.env.TAG_NAME;
+            const target = process.env.TARGET_COMMIT;
+            const body = process.env.RELEASE_BODY;
+            let releaseData;
+            try {
+              const existing = await github.rest.repos.getReleaseByTag({ owner, repo, tag });
+              core.info(`Updating existing release for ${tag}.`);
+              const updated = await github.rest.repos.updateRelease({
+                owner,
+                repo,
+                release_id: existing.data.id,
+                tag_name: tag,
+                target_commitish: target,
+                name: tag,
+                body,
+                draft: false,
+                prerelease: false,
+              });
+              releaseData = updated.data;
+            } catch (error) {
+              if (error.status !== 404) {
+                throw error;
+              }
+              core.info(`Creating new release for ${tag}.`);
+              const created = await github.rest.repos.createRelease({
+                owner,
+                repo,
+                tag_name: tag,
+                target_commitish: target,
+                name: tag,
+                body,
+                draft: false,
+                prerelease: false,
+              });
+              releaseData = created.data;
+            }
+            core.setOutput('id', releaseData.id.toString());
+            core.setOutput('upload_url', releaseData.upload_url);
+
+      - name: Collect artefact paths
+        id: artefacts
+        run: |
+          set -euo pipefail
+          find dist/packages -type f -print | sort > artefacts.txt
+          if [[ ! -s artefacts.txt ]]; then
+            echo "No artefacts found to upload." >&2
+            exit 1
+          fi
+          {
+            echo "files<<EOF"
+            cat artefacts.txt
+            echo "EOF"
+          } >> "${GITHUB_OUTPUT}"
+
+      - name: Upload release assets
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd
+        env:
+          RELEASE_ID: ${{ steps.create_release.outputs.id }}
+          FILES: ${{ steps.artefacts.outputs.files }}
+        with:
+          script: |
+            const fs = require('fs');
+            const path = require('path');
+            const { owner, repo } = context.repo;
+            const releaseId = Number(process.env.RELEASE_ID);
+            const files = process.env.FILES.split('\n').filter(Boolean);
+            const existingAssets = await github.paginate(
+              github.rest.repos.listReleaseAssets,
+              { owner, repo, release_id: releaseId, per_page: 100 }
+            );
+            for (const asset of existingAssets) {
+              if (files.some(file => path.basename(file) === asset.name)) {
+                core.info(`Deleting existing asset ${asset.name}`);
+                await github.rest.repos.deleteReleaseAsset({
+                  owner,
+                  repo,
+                  asset_id: asset.id,
+                });
+              }
+            }
+            for (const file of files) {
+              const name = path.basename(file);
+              const data = await fs.promises.readFile(file);
+              core.info(`Uploading ${name}`);
+              await github.rest.repos.uploadReleaseAsset({
+                owner,
+                repo,
+                release_id: releaseId,
+                name,
+                data,
+                headers: {
+                  'content-type': 'application/octet-stream',
+                  'content-length': data.length,
+                },
+              });
+            }
