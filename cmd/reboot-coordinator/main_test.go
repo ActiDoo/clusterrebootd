@@ -772,8 +772,8 @@ func TestBuildBaseEnvironmentOmitsUnsetPolicyContext(t *testing.T) {
 	if _, ok := env["RC_CLUSTER_MIN_HEALTHY_ABSOLUTE"]; ok {
 		t.Fatalf("expected RC_CLUSTER_MIN_HEALTHY_ABSOLUTE to be absent")
 	}
-	if _, ok := env["RC_CLUSTER_FORBID_IF_ONLY_FALLBACK_LEFT"]; ok {
-		t.Fatalf("expected RC_CLUSTER_FORBID_IF_ONLY_FALLBACK_LEFT to be absent")
+	if got := env["RC_CLUSTER_FORBID_IF_ONLY_FALLBACK_LEFT"]; got != "false" {
+		t.Fatalf("expected RC_CLUSTER_FORBID_IF_ONLY_FALLBACK_LEFT false, got %q", got)
 	}
 	if _, ok := env["RC_CLUSTER_FALLBACK_NODES"]; ok {
 		t.Fatalf("expected RC_CLUSTER_FALLBACK_NODES to be absent")

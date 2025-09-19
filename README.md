@@ -87,8 +87,13 @@ demonstrates how to wire the implemented features together:
 - Two reboot detectors: a Debian/Ubuntu marker file and the RHEL `needs-restarting`
   command with a guard for its reboot-required exit code.
 - Cluster guardrails: health script location and timeout, an operator-controlled
-  kill switch file, cluster policy hints (minimum healthy nodes and designated
-  fallback nodes), and maintenance windows.  Cron-like `windows.deny`
+  kill switch file, and cluster policy hints (minimum healthy nodes and
+  designated fallback nodes) that are exported to the health script environment
+  via `RC_CLUSTER_MIN_HEALTHY_FRACTION`, `RC_CLUSTER_MIN_HEALTHY_ABSOLUTE`,
+  `RC_CLUSTER_FORBID_IF_ONLY_FALLBACK_LEFT`, and
+  `RC_CLUSTER_FALLBACK_NODES`.  The boolean flag is always exported (set to
+  `false` when unset) to avoid scripts having to special-case missing keys. 
+  Cron-like `windows.deny`
   expressions short-circuit the orchestration loop before detector execution
   while `windows.allow` restricts runs to explicitly approved slots.  The
   configured windows are also exported to the health script environment via
@@ -104,6 +109,35 @@ demonstrates how to wire the implemented features together:
 Copy the file, update endpoints, file paths, and policy thresholds, and then run
 `reboot-coordinator validate-config --config /path/to/config.yaml` to confirm
 the configuration is accepted before rolling it out.
+
+### Health Script Environment
+
+The CLI initialises the health runner with configuration context so scripts do
+not need to re-parse the YAML on every invocation.  Static entries include:
+
+- `RC_NODE_NAME`, `RC_DRY_RUN`, `RC_LOCK_KEY`, `RC_ETCD_ENDPOINTS`,
+  `RC_KILL_SWITCH_FILE`
+- Cluster policy hints exposed via `RC_CLUSTER_MIN_HEALTHY_FRACTION`,
+  `RC_CLUSTER_MIN_HEALTHY_ABSOLUTE`,
+  `RC_CLUSTER_FORBID_IF_ONLY_FALLBACK_LEFT`, and `RC_CLUSTER_FALLBACK_NODES`
+- Maintenance windows provided through `RC_WINDOWS_ALLOW` and
+  `RC_WINDOWS_DENY`
+- Metrics exposure via `RC_METRICS_ENDPOINT` when the listener is enabled
+- Optional skip hints (`RC_SKIP_HEALTH`, `RC_SKIP_LOCK`) when diagnostic flags
+  are used
+
+Each execution is further annotated with runtime context:
+
+- `RC_PHASE` (`pre-lock` or `post-lock`)
+- `RC_LOCK_ENABLED` indicating whether the runner will attempt to hold the
+  distributed lock
+- `RC_LOCK_HELD` capturing whether the current invocation is under lock
+- `RC_LOCK_ATTEMPTS` showing how many acquisition attempts were needed before
+  the script ran (zero before lock acquisition)
+
+These values allow operators to write a single health script that can reason
+about configuration, maintenance windows, and the current orchestration state
+without shelling out to auxiliary utilities.
 
 ## Development Container
 

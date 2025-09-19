@@ -206,6 +206,68 @@ func TestRunnerKillSwitchActive(t *testing.T) {
 	}
 }
 
+func TestRunnerHealthEnvironmentIncludesLockContext(t *testing.T) {
+	cfg := baseConfig()
+	engine := &fakeEngine{steps: []evalStep{
+		{requires: true, results: []detector.Result{{Name: "pre"}}},
+		{requires: true, results: []detector.Result{{Name: "post"}}},
+	}}
+	healthRunner := &fakeHealth{steps: []healthStep{
+		{result: health.Result{ExitCode: 0}},
+		{result: health.Result{ExitCode: 0}},
+	}}
+	locker := &fakeLocker{outcomes: []acquireOutcome{{lease: &fakeLease{}}}}
+
+	runner, err := NewRunner(cfg, engine, healthRunner, locker)
+  
+  if err != nil {
+		t.Fatalf("failed to create runner: %v", err)
+	}
+
+	outcome, err := runner.RunOnce(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+  	if outcome.Status != OutcomeReady {
+		t.Fatalf("expected OutcomeReady, got %s", outcome.Status)
+	}
+
+	if len(healthRunner.lastEnvs) != 2 {
+		t.Fatalf("expected 2 health executions, got %d", len(healthRunner.lastEnvs))
+	}
+
+	pre := healthRunner.lastEnvs[0]
+	if got := pre["RC_PHASE"]; got != "pre-lock" {
+		t.Fatalf("expected pre-lock phase, got %q", got)
+	}
+	if got := pre["RC_LOCK_ENABLED"]; got != "true" {
+		t.Fatalf("expected RC_LOCK_ENABLED true, got %q", got)
+	}
+	if got := pre["RC_LOCK_HELD"]; got != "false" {
+		t.Fatalf("expected RC_LOCK_HELD false, got %q", got)
+	}
+	if got := pre["RC_LOCK_ATTEMPTS"]; got != "0" {
+		t.Fatalf("expected RC_LOCK_ATTEMPTS 0, got %q", got)
+	}
+
+	post := healthRunner.lastEnvs[1]
+	if got := post["RC_PHASE"]; got != "post-lock" {
+		t.Fatalf("expected post-lock phase, got %q", got)
+	}
+	if got := post["RC_LOCK_ENABLED"]; got != "true" {
+		t.Fatalf("expected RC_LOCK_ENABLED true post-lock, got %q", got)
+	}
+	if got := post["RC_LOCK_HELD"]; got != "true" {
+		t.Fatalf("expected RC_LOCK_HELD true, got %q", got)
+	}
+	if got := post["RC_LOCK_ATTEMPTS"]; got != "1" {
+		t.Fatalf("expected RC_LOCK_ATTEMPTS 1, got %q", got)
+	}
+	if got := post["RC_NODE_NAME"]; got != cfg.NodeName {
+		t.Fatalf("expected RC_NODE_NAME %q, got %q", cfg.NodeName, got)
+	}
+}
+
 func TestRunnerBlockedByDenyWindow(t *testing.T) {
 	cfg := baseConfig()
 	cfg.Windows.Deny = []string{"Mon 00:00-Tue 00:00"}
@@ -218,6 +280,7 @@ func TestRunnerBlockedByDenyWindow(t *testing.T) {
 	}
 
 	runner, err := NewRunner(cfg, engine, healthRunner, locker, WithTimeSource(now))
+  
 	if err != nil {
 		t.Fatalf("failed to create runner: %v", err)
 	}

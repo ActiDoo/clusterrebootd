@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"math/rand"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -248,7 +249,7 @@ func (r *Runner) RunOnce(ctx context.Context) (out Outcome, err error) {
 		return out, nil
 	}
 
-	preHealth, healthErr := r.runHealthWithObservability(ctx, "pre-lock")
+	preHealth, healthErr := r.runHealthWithObservability(ctx, "pre-lock", false, 0)
 	out.PreLockHealthResult = &preHealth
 	if healthErr != nil {
 		return out, fmt.Errorf("pre-lock health check: %w", healthErr)
@@ -273,7 +274,7 @@ func (r *Runner) RunOnce(ctx context.Context) (out Outcome, err error) {
 		return out, nil
 	}
 
-	lease, acquired, err := r.acquireLock(ctx)
+	lease, acquired, attempts, err := r.acquireLock(ctx)
 	if err != nil {
 		return out, err
 	}
@@ -308,7 +309,7 @@ func (r *Runner) RunOnce(ctx context.Context) (out Outcome, err error) {
 		return out, nil
 	}
 
-	postHealth, healthErr := r.runHealthWithObservability(ctx, "post-lock")
+	postHealth, healthErr := r.runHealthWithObservability(ctx, "post-lock", true, attempts)
 	out.PostLockHealthResult = &postHealth
 	if healthErr != nil {
 		return out, fmt.Errorf("post-lock health check: %w", healthErr)
@@ -327,7 +328,7 @@ func (r *Runner) RunOnce(ctx context.Context) (out Outcome, err error) {
 	return out, nil
 }
 
-func (r *Runner) acquireLock(ctx context.Context) (lock.Lease, bool, error) {
+func (r *Runner) acquireLock(ctx context.Context) (lock.Lease, bool, int, error) {
 	minBackoff, maxBackoff := r.cfg.BackoffBounds()
 	if minBackoff <= 0 {
 		minBackoff = time.Second
@@ -348,30 +349,30 @@ func (r *Runner) acquireLock(ctx context.Context) (lock.Lease, bool, error) {
 		case err == nil:
 			r.recordLockAttempt(ctx, attempt, duration, "success", nil)
 			r.recordLockAcquired(ctx, attempt, time.Since(start))
-			return lease, true, nil
+			return lease, true, attempt + 1, nil
 		case errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded):
 			r.recordLockAttempt(ctx, attempt, duration, "canceled", err)
-			return nil, false, err
+			return nil, false, attempt + 1, err
 		case errors.Is(err, lock.ErrNotAcquired):
 			r.recordLockAttempt(ctx, attempt, duration, "contended", err)
 			if attempt == r.maxLockTries-1 {
 				r.recordLockFailure(ctx, attempt+1)
-				return nil, false, nil
+				return nil, false, attempt + 1, nil
 			}
 		default:
 			r.recordLockAttempt(ctx, attempt, duration, "error", err)
-			return nil, false, fmt.Errorf("acquire lock: %w", err)
+			return nil, false, attempt + 1, fmt.Errorf("acquire lock: %w", err)
 		}
 
 		delay := r.nextBackoffDelay(attempt, minBackoff, maxBackoff)
 		lastDelay = delay
 		r.recordLockBackoff(ctx, attempt, delay)
 		if err := r.sleepWithContext(ctx, delay); err != nil {
-			return nil, false, err
+			return nil, false, attempt + 1, err
 		}
 	}
 	r.recordLockFailure(ctx, r.maxLockTries)
-	return nil, false, fmt.Errorf("failed to acquire lock after %d attempts (last delay %s)", r.maxLockTries, lastDelay)
+	return nil, false, r.maxLockTries, fmt.Errorf("failed to acquire lock after %d attempts (last delay %s)", r.maxLockTries, lastDelay)
 }
 
 func (r *Runner) nextBackoffDelay(attempt int, min, max time.Duration) time.Duration {
@@ -434,10 +435,16 @@ func (r *Runner) evaluateDetectorsWithObservability(ctx context.Context, phase s
 	return requires, results, err
 }
 
-func (r *Runner) runHealthWithObservability(ctx context.Context, phase string) (health.Result, error) {
+func (r *Runner) runHealthWithObservability(ctx context.Context, phase string, lockHeld bool, lockAttempts int) (health.Result, error) {
+	if lockAttempts < 0 {
+		lockAttempts = 0
+	}
 	env := map[string]string{
-		"RC_PHASE":     phase,
-		"RC_NODE_NAME": r.cfg.NodeName,
+		"RC_PHASE":         phase,
+		"RC_NODE_NAME":     r.cfg.NodeName,
+		"RC_LOCK_ENABLED":  strconv.FormatBool(r.lockEnabled),
+		"RC_LOCK_HELD":     strconv.FormatBool(lockHeld),
+		"RC_LOCK_ATTEMPTS": strconv.Itoa(lockAttempts),
 	}
 	start := time.Now()
 	res, err := r.health.Run(ctx, env)
