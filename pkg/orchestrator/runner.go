@@ -15,6 +15,7 @@ import (
 	"github.com/clusterrebootd/clusterrebootd/pkg/health"
 	"github.com/clusterrebootd/clusterrebootd/pkg/lock"
 	"github.com/clusterrebootd/clusterrebootd/pkg/observability"
+	"github.com/clusterrebootd/clusterrebootd/pkg/windows"
 )
 
 // DetectorEvaluator abstracts the detector engine for orchestration.
@@ -34,6 +35,8 @@ const (
 	OutcomeNoAction        OutcomeStatus = "no_action"
 	OutcomeKillSwitch      OutcomeStatus = "kill_switch_active"
 	OutcomeHealthBlocked   OutcomeStatus = "health_blocked"
+	OutcomeWindowDenied    OutcomeStatus = "window_denied"
+	OutcomeWindowOutside   OutcomeStatus = "window_outside_allow"
 	OutcomeLockUnavailable OutcomeStatus = "lock_unavailable"
 	OutcomeLockSkipped     OutcomeStatus = "lock_skipped"
 	OutcomeRecheckCleared  OutcomeStatus = "recheck_cleared"
@@ -59,6 +62,7 @@ type Runner struct {
 	detectors      DetectorEvaluator
 	health         HealthRunner
 	locker         lock.Manager
+	windows        windows.Evaluator
 	killSwitchPath string
 	checkKill      func(string) (bool, error)
 	sleep          func(time.Duration)
@@ -67,6 +71,7 @@ type Runner struct {
 	reporter       Reporter
 	lockEnabled    bool
 	lockSkipReason string
+	now            func() time.Time
 }
 
 // Option configures a Runner.
@@ -125,6 +130,15 @@ func WithLockAcquisition(enabled bool, reason string) Option {
 	}
 }
 
+// WithTimeSource injects a custom time source, enabling deterministic tests.
+func WithTimeSource(fn func() time.Time) Option {
+	return func(r *Runner) {
+		if fn != nil {
+			r.now = fn
+		}
+	}
+}
+
 // NewRunner constructs a Runner with the provided dependencies.
 func NewRunner(cfg *config.Config, detectors DetectorEvaluator, healthRunner HealthRunner, locker lock.Manager, opts ...Option) (*Runner, error) {
 	if cfg == nil {
@@ -173,6 +187,15 @@ func NewRunner(cfg *config.Config, detectors DetectorEvaluator, healthRunner Hea
 	if runner.reporter == nil {
 		runner.reporter = NoopReporter{}
 	}
+	if runner.now == nil {
+		runner.now = time.Now
+	}
+
+	windowsEval, err := windows.NewEvaluator(cfg.Windows.Allow, cfg.Windows.Deny)
+	if err != nil {
+		return nil, fmt.Errorf("parse windows: %w", err)
+	}
+	runner.windows = windowsEval
 
 	return runner, nil
 }
@@ -198,6 +221,21 @@ func (r *Runner) RunOnce(ctx context.Context) (out Outcome, err error) {
 		out.Status = OutcomeKillSwitch
 		out.Message = fmt.Sprintf("kill switch %s present", r.killSwitchPath)
 		return out, nil
+	}
+
+	if r.windows != nil {
+		decision := r.windows.Evaluate(r.now())
+		r.recordWindowDecision(ctx, decision)
+		if !decision.Allowed {
+			if decision.MatchedDeny != nil {
+				out.Status = OutcomeWindowDenied
+				out.Message = fmt.Sprintf("blocked by deny window %q", decision.MatchedDeny.Expression)
+			} else {
+				out.Status = OutcomeWindowOutside
+				out.Message = "outside configured allow windows"
+			}
+			return out, nil
+		}
 	}
 
 	requires, results, evalErr := r.evaluateDetectorsWithObservability(ctx, "pre-lock")
@@ -412,6 +450,44 @@ func (r *Runner) runHealthWithObservability(ctx context.Context, phase string, l
 	res, err := r.health.Run(ctx, env)
 	r.recordHealth(ctx, phase, time.Since(start), res, err)
 	return res, err
+}
+
+func (r *Runner) recordWindowDecision(ctx context.Context, decision windows.Decision) {
+	result := "allowed"
+	level := observability.LevelInfo
+	fields := map[string]interface{}{
+		"allowed": decision.Allowed,
+	}
+	if decision.AllowConfigured {
+		fields["allow_configured"] = true
+	}
+	if decision.MatchedDeny != nil {
+		result = "deny"
+		level = observability.LevelWarn
+		fields["matched_expression"] = decision.MatchedDeny.Expression
+	} else if decision.AllowConfigured {
+		if decision.MatchedAllow != nil {
+			fields["matched_expression"] = decision.MatchedAllow.Expression
+		} else {
+			result = "outside_allow"
+			level = observability.LevelWarn
+		}
+	}
+
+	r.reporter.RecordMetric(observability.Metric{
+		Name:        "window_evaluations_total",
+		Type:        observability.MetricCounter,
+		Value:       1,
+		Labels:      map[string]string{"result": result},
+		Description: "Number of maintenance window evaluations grouped by result.",
+	})
+
+	r.reporter.RecordEvent(ctx, observability.Event{
+		Level:  level,
+		Node:   r.cfg.NodeName,
+		Event:  "maintenance_window",
+		Fields: fields,
+	})
 }
 
 func (r *Runner) recordKillSwitch(ctx context.Context, stage string, active bool, checkErr error) {
@@ -677,7 +753,7 @@ func (r *Runner) recordOutcome(ctx context.Context, out Outcome) {
 
 	level := observability.LevelInfo
 	switch out.Status {
-	case OutcomeKillSwitch, OutcomeHealthBlocked, OutcomeLockUnavailable, OutcomeLockSkipped:
+	case OutcomeKillSwitch, OutcomeHealthBlocked, OutcomeWindowDenied, OutcomeWindowOutside, OutcomeLockUnavailable, OutcomeLockSkipped:
 		level = observability.LevelWarn
 	}
 

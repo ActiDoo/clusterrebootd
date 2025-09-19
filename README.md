@@ -78,10 +78,13 @@ demonstrates how to wire the implemented features together:
   via `RC_CLUSTER_MIN_HEALTHY_FRACTION`, `RC_CLUSTER_MIN_HEALTHY_ABSOLUTE`,
   `RC_CLUSTER_FORBID_IF_ONLY_FALLBACK_LEFT`, and
   `RC_CLUSTER_FALLBACK_NODES`.  The boolean flag is always exported (set to
-  `false` when unset) to avoid scripts having to special-case missing keys.  If
-  reboot windows are configured they are injected through `RC_WINDOWS_ALLOW`
-  and `RC_WINDOWS_DENY` so scripts can honour operator-defined maintenance
-  schedules.
+  `false` when unset) to avoid scripts having to special-case missing keys. 
+  Cron-like `windows.deny`
+  expressions short-circuit the orchestration loop before detector execution
+  while `windows.allow` restricts runs to explicitly approved slots.  The
+  configured windows are also exported to the health script environment via
+  `RC_WINDOWS_ALLOW` and `RC_WINDOWS_DENY` so scripts can remain consistent with
+  the daemon's enforcement.
 - Distributed coordination: three etcd endpoints, an explicit namespace,
   lock key, and optional mutual TLS credentials.
 - Observability: metrics listener enabled so the daemon injects
@@ -175,6 +178,27 @@ Future milestones will extend the loop with structured logging, observability
 integrations, packaging assets, and the full CI/CD pipeline described in the
 PRD.
 
+### Exit Codes
+
+The CLI normalises exit codes so automation and operators can reason about the
+daemon's state without parsing logs:
+
+| Code | Meaning | Returned By |
+| ---- | ------- | ----------- |
+| 0    | Success. No reboot required, prerequisites satisfied, or configuration validated. | All commands on success, including `run --once` and `status` when they report `no_action`, `recheck_cleared`, or `ready`. |
+| 1    | Runtime failure. Setup or orchestration error prevented evaluation. | `run`, `run --once`, `status`, `simulate`. |
+| 2    | Invalid configuration. | `run`, `status`, `validate-config`. |
+| 3    | Blocked by the health script (pre- or post-lock). | `run --once`, `status`, and long-running `run` when terminated while health is blocking. |
+| 4    | Lock contention prevented progress. | `run --once`, `status`, and long-running `run` when terminated while unable to acquire the lock. |
+| 5    | Kill switch present. | `run --once`, `status`, and long-running `run` when terminated while the kill switch is active. |
+| 6    | Detector evaluation failed during simulation. | `simulate`. |
+| 64   | CLI usage error (unknown command or flag parsing failure). | All commands. |
+
+The long-running `run` mode applies the same mappings when it exits due to a
+signal: if the last observed outcome was blocked by health, lock contention, or
+the kill switch, the process returns that exit code so supervisors can reflect
+the blocking condition.
+
 ### Observability
 
 Running `reboot-coordinator run` now emits structured JSON logs to stderr for
@@ -190,6 +214,21 @@ metrics:
   enabled: true
   listen: 0.0.0.0:9090
 ```
+
+#### Etcd lock metadata
+
+When the coordinator acquires the distributed mutex it overwrites the lock key
+with a JSON object describing the holder.  Operators can inspect the key via
+`etcdctl` or the API to confirm which node is currently rebooting and when it
+claimed the lease:
+
+```json
+{"node":"node-a","pid":1234,"acquired_at":"2024-03-07T11:45:12.123Z"}
+```
+
+`node` reflects the configured `node_name`, `pid` is the coordinator process
+ID, and `acquired_at` is the RFC3339 timestamp recorded when the lock was
+obtained.
 
 When enabled, the daemon starts an HTTP listener on the configured address and
 serves Prometheus-compatible counters and histograms under `/metrics`.  The

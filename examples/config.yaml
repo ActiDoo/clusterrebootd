@@ -62,6 +62,15 @@ cluster_policies:
   # RC_CLUSTER_FORBID_IF_ONLY_FALLBACK_LEFT is always exported as "true"/"false"
   # so health scripts do not need to handle missing environment variables.
 
+# Optional maintenance windows. Deny entries always win; allow entries restrict
+# reboots to explicit slots. Windows use a cron-like "DAY TIME-DAY TIME" syntax
+# where the end day can be omitted to imply the start day.
+windows:
+  deny:
+    - "Fri 18:00-Mon 08:00"
+  allow:
+    - "Tue-Thu 22:00-04:00"
+
 metrics:
   enabled: true
   listen: 0.0.0.0:9090

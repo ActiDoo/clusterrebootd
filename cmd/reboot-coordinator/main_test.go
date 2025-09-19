@@ -169,6 +169,157 @@ lock_ttl_sec: 120
 	}
 }
 
+func TestCommandRunOnceHealthBlockedExitCode(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("file paths and shell scripts not available on Windows test environment")
+	}
+
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "config.yaml")
+	marker := filepath.Join(dir, "reboot-required")
+	healthScript := filepath.Join(dir, "health.sh")
+
+	cluster := testutil.StartEmbeddedEtcd(t)
+	endpoint := cluster.Endpoints[0]
+
+	script := "#!/bin/sh\nexit 1\n"
+	if err := os.WriteFile(healthScript, []byte(script), 0o755); err != nil {
+		t.Fatalf("failed to write health script: %v", err)
+	}
+
+	configData := fmt.Sprintf(`
+node_name: node-a
+reboot_required_detectors:
+  - type: file
+    path: %s
+health_script: %s
+etcd_endpoints:
+  - %s
+lock_key: /cluster/reboot-coordinator/lock
+lock_ttl_sec: 120
+`, marker, healthScript, endpoint)
+
+	if err := os.WriteFile(configPath, []byte(configData), 0o644); err != nil {
+		t.Fatalf("failed to write config: %v", err)
+	}
+	if err := os.WriteFile(marker, []byte("1"), 0o644); err != nil {
+		t.Fatalf("failed to create marker: %v", err)
+	}
+
+	var stdout, stderr bytes.Buffer
+	exitCode := commandRunWithWriters([]string{"--config", configPath, "--once"}, &stdout, &stderr)
+	if exitCode != exitHealthBlocked {
+		t.Fatalf("expected exitHealthBlocked, got %d (stderr: %s)", exitCode, stderr.String())
+	}
+	output := stdout.String()
+	if !strings.Contains(output, fmt.Sprintf("outcome: %s", orchestrator.OutcomeHealthBlocked)) {
+		t.Fatalf("expected health_blocked outcome, got: %s", output)
+	}
+}
+
+func TestCommandRunOnceKillSwitchExitCode(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("file paths and /bin/true not available on Windows test environment")
+	}
+
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "config.yaml")
+	killSwitch := filepath.Join(dir, "kill-switch")
+	marker := filepath.Join(dir, "reboot-required")
+
+	cluster := testutil.StartEmbeddedEtcd(t)
+	endpoint := cluster.Endpoints[0]
+
+	configData := fmt.Sprintf(`
+node_name: node-a
+reboot_required_detectors:
+  - type: file
+    path: %s
+health_script: /bin/true
+etcd_endpoints:
+  - %s
+kill_switch_file: %s
+lock_key: /cluster/reboot-coordinator/lock
+lock_ttl_sec: 120
+`, marker, endpoint, killSwitch)
+
+	if err := os.WriteFile(configPath, []byte(configData), 0o644); err != nil {
+		t.Fatalf("failed to write config: %v", err)
+	}
+	if err := os.WriteFile(killSwitch, []byte("disabled"), 0o644); err != nil {
+		t.Fatalf("failed to create kill switch: %v", err)
+	}
+
+	var stdout, stderr bytes.Buffer
+	exitCode := commandRunWithWriters([]string{"--config", configPath, "--once"}, &stdout, &stderr)
+	if exitCode != exitKillSwitch {
+		t.Fatalf("expected exitKillSwitch, got %d (stderr: %s)", exitCode, stderr.String())
+	}
+	output := stdout.String()
+	if !strings.Contains(output, fmt.Sprintf("outcome: %s", orchestrator.OutcomeKillSwitch)) {
+		t.Fatalf("expected kill_switch outcome, got: %s", output)
+	}
+}
+
+func TestCommandRunOnceLockUnavailableExitCode(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("file paths and /bin/true not available on Windows test environment")
+	}
+
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "config.yaml")
+	marker := filepath.Join(dir, "reboot-required")
+
+	cluster := testutil.StartEmbeddedEtcd(t)
+	endpoint := cluster.Endpoints[0]
+
+	configData := fmt.Sprintf(`
+node_name: node-a
+reboot_required_detectors:
+  - type: file
+    path: %s
+health_script: /bin/true
+etcd_endpoints:
+  - %s
+lock_key: /cluster/reboot-coordinator/lock
+lock_ttl_sec: 120
+backoff_min_sec: 1
+backoff_max_sec: 1
+`, marker, endpoint)
+
+	if err := os.WriteFile(configPath, []byte(configData), 0o644); err != nil {
+		t.Fatalf("failed to write config: %v", err)
+	}
+	if err := os.WriteFile(marker, []byte("1"), 0o644); err != nil {
+		t.Fatalf("failed to create marker: %v", err)
+	}
+
+	manager, err := lock.NewEtcdManager(lock.EtcdManagerOptions{
+		Endpoints: cluster.Endpoints,
+		LockKey:   "/cluster/reboot-coordinator/lock",
+		TTL:       120 * time.Second,
+	})
+	if err != nil {
+		t.Fatalf("failed to create lock manager: %v", err)
+	}
+	defer manager.Close()
+	lease, err := manager.Acquire(context.Background())
+	if err != nil {
+		t.Fatalf("failed to acquire lock for setup: %v", err)
+	}
+	defer lease.Release(context.Background())
+
+	var stdout, stderr bytes.Buffer
+	exitCode := commandRunWithWriters([]string{"--config", configPath, "--once"}, &stdout, &stderr)
+	if exitCode != exitLockUnavailable {
+		t.Fatalf("expected exitLockUnavailable, got %d (stderr: %s)", exitCode, stderr.String())
+	}
+	output := stdout.String()
+	if !strings.Contains(output, fmt.Sprintf("outcome: %s", orchestrator.OutcomeLockUnavailable)) {
+		t.Fatalf("expected lock_unavailable outcome, got: %s", output)
+	}
+}
+
 func TestCommandRunWithMetricsEnabled(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("file paths and /bin/true not available on Windows test environment")
@@ -341,6 +492,8 @@ lock_ttl_sec: 120
 		Endpoints: cluster.Endpoints,
 		LockKey:   "/cluster/reboot-coordinator/lock",
 		TTL:       120 * time.Second,
+		NodeName:  "test-node",
+		ProcessID: 1337,
 	})
 	if err != nil {
 		t.Fatalf("failed to create lock manager: %v", err)
@@ -354,12 +507,104 @@ lock_ttl_sec: 120
 
 	var stdout, stderr bytes.Buffer
 	exitCode := commandStatusWithWriters([]string{"--config", configPath}, &stdout, &stderr)
-	if exitCode != exitOK {
-		t.Fatalf("expected exitOK, got %d (stderr: %s)", exitCode, stderr.String())
+	if exitCode != exitLockUnavailable {
+		t.Fatalf("expected exitLockUnavailable, got %d (stderr: %s)", exitCode, stderr.String())
 	}
 	output := stdout.String()
 	if !strings.Contains(output, fmt.Sprintf("outcome: %s", orchestrator.OutcomeLockUnavailable)) {
 		t.Fatalf("expected lock_unavailable outcome, got: %s", output)
+	}
+}
+
+func TestCommandStatusHealthBlockedExitCode(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("file paths and shell scripts not available on Windows test environment")
+	}
+
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "config.yaml")
+	marker := filepath.Join(dir, "reboot-required")
+	healthScript := filepath.Join(dir, "health.sh")
+
+	cluster := testutil.StartEmbeddedEtcd(t)
+	endpoint := cluster.Endpoints[0]
+
+	script := "#!/bin/sh\nexit 1\n"
+	if err := os.WriteFile(healthScript, []byte(script), 0o755); err != nil {
+		t.Fatalf("failed to write health script: %v", err)
+	}
+
+	configData := fmt.Sprintf(`
+node_name: node-a
+reboot_required_detectors:
+  - type: file
+    path: %s
+health_script: %s
+etcd_endpoints:
+  - %s
+lock_key: /cluster/reboot-coordinator/lock
+lock_ttl_sec: 120
+`, marker, healthScript, endpoint)
+
+	if err := os.WriteFile(configPath, []byte(configData), 0o644); err != nil {
+		t.Fatalf("failed to write config: %v", err)
+	}
+	if err := os.WriteFile(marker, []byte("1"), 0o644); err != nil {
+		t.Fatalf("failed to create marker: %v", err)
+	}
+
+	var stdout, stderr bytes.Buffer
+	exitCode := commandStatusWithWriters([]string{"--config", configPath}, &stdout, &stderr)
+	if exitCode != exitHealthBlocked {
+		t.Fatalf("expected exitHealthBlocked, got %d (stderr: %s)", exitCode, stderr.String())
+	}
+	output := stdout.String()
+	if !strings.Contains(output, fmt.Sprintf("outcome: %s", orchestrator.OutcomeHealthBlocked)) {
+		t.Fatalf("expected health_blocked outcome, got: %s", output)
+	}
+}
+
+func TestCommandStatusKillSwitchExitCode(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("file paths and /bin/true not available on Windows test environment")
+	}
+
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "config.yaml")
+	killSwitch := filepath.Join(dir, "kill-switch")
+	marker := filepath.Join(dir, "reboot-required")
+
+	cluster := testutil.StartEmbeddedEtcd(t)
+	endpoint := cluster.Endpoints[0]
+
+	configData := fmt.Sprintf(`
+node_name: node-a
+reboot_required_detectors:
+  - type: file
+    path: %s
+health_script: /bin/true
+etcd_endpoints:
+  - %s
+kill_switch_file: %s
+lock_key: /cluster/reboot-coordinator/lock
+lock_ttl_sec: 120
+`, marker, endpoint, killSwitch)
+
+	if err := os.WriteFile(configPath, []byte(configData), 0o644); err != nil {
+		t.Fatalf("failed to write config: %v", err)
+	}
+	if err := os.WriteFile(killSwitch, []byte("disabled"), 0o644); err != nil {
+		t.Fatalf("failed to create kill switch: %v", err)
+	}
+
+	var stdout, stderr bytes.Buffer
+	exitCode := commandStatusWithWriters([]string{"--config", configPath}, &stdout, &stderr)
+	if exitCode != exitKillSwitch {
+		t.Fatalf("expected exitKillSwitch, got %d (stderr: %s)", exitCode, stderr.String())
+	}
+	output := stdout.String()
+	if !strings.Contains(output, fmt.Sprintf("outcome: %s", orchestrator.OutcomeKillSwitch)) {
+		t.Fatalf("expected kill_switch outcome, got: %s", output)
 	}
 }
 

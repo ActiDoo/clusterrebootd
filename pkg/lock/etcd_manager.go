@@ -3,9 +3,11 @@ package lock
 import (
 	"context"
 	"crypto/tls"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
+	"os"
 	"strings"
 	"time"
 
@@ -22,6 +24,9 @@ type EtcdManagerOptions struct {
 	Namespace   string
 	TTL         time.Duration
 	TLS         *tls.Config
+	NodeName    string
+	ProcessID   int
+	Clock       func() time.Time
 }
 
 // EtcdManager coordinates lock acquisition via etcd mutexes.
@@ -29,6 +34,19 @@ type EtcdManager struct {
 	client     *clientv3.Client
 	key        string
 	ttlSeconds int
+	identity   leaseIdentity
+	now        func() time.Time
+}
+
+type leaseIdentity struct {
+	nodeName string
+	pid      int
+}
+
+type leaseAnnotation struct {
+	Node       string `json:"node"`
+	PID        int    `json:"pid"`
+	AcquiredAt string `json:"acquired_at"`
 }
 
 // NewEtcdManager builds a lock manager backed by etcd.
@@ -42,6 +60,21 @@ func NewEtcdManager(opts EtcdManagerOptions) (*EtcdManager, error) {
 	}
 	if opts.TTL <= 0 {
 		return nil, errors.New("etcd lock manager requires a positive TTL")
+	}
+
+	nodeName := strings.TrimSpace(opts.NodeName)
+	if nodeName == "" {
+		return nil, errors.New("etcd lock manager requires a non-empty node name for metadata")
+	}
+
+	pid := opts.ProcessID
+	if pid <= 0 {
+		pid = os.Getpid()
+	}
+
+	clock := opts.Clock
+	if clock == nil {
+		clock = time.Now
 	}
 
 	ttlSeconds := int(math.Ceil(opts.TTL.Seconds()))
@@ -72,6 +105,11 @@ func NewEtcdManager(opts EtcdManagerOptions) (*EtcdManager, error) {
 		client:     client,
 		key:        applyNamespace(opts.Namespace, trimmedKey),
 		ttlSeconds: ttlSeconds,
+		identity: leaseIdentity{
+			nodeName: nodeName,
+			pid:      pid,
+		},
+		now: clock,
 	}
 
 	return manager, nil
@@ -109,6 +147,17 @@ func (m *EtcdManager) Acquire(ctx context.Context) (Lease, error) {
 			return nil, err
 		}
 		return nil, fmt.Errorf("try lock: %w", err)
+	}
+
+	if err := m.annotateLease(ctx, session, mutex); err != nil {
+		cleanupCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		_ = mutex.Unlock(cleanupCtx)
+		cancel()
+		_ = session.Close()
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return nil, err
+		}
+		return nil, fmt.Errorf("annotate lock: %w", err)
 	}
 
 	return &etcdLease{session: session, mutex: mutex}, nil
@@ -152,4 +201,20 @@ func applyNamespace(namespace, key string) string {
 		return normalizedKey
 	}
 	return "/" + trimmedNamespace + normalizedKey
+}
+
+func (m *EtcdManager) annotateLease(ctx context.Context, session *concurrency.Session, mutex *concurrency.Mutex) error {
+	annotation := leaseAnnotation{
+		Node:       m.identity.nodeName,
+		PID:        m.identity.pid,
+		AcquiredAt: m.now().UTC().Format(time.RFC3339Nano),
+	}
+
+	payload, err := json.Marshal(annotation)
+	if err != nil {
+		return err
+	}
+
+	_, err = session.Client().Put(ctx, mutex.Key(), string(payload), clientv3.WithLease(session.Lease()))
+	return err
 }
