@@ -21,6 +21,9 @@ jobs:
     timeout-minutes: 30
     env:
       GO_VERSION: '1.23.x'
+      RELEASE_COSIGN_KEY: ${{ secrets.RELEASE_COSIGN_KEY }}
+      RELEASE_COSIGN_PUB: ${{ secrets.RELEASE_COSIGN_PUB }}
+      RELEASE_COSIGN_PASSWORD: ${{ secrets.RELEASE_COSIGN_PASSWORD }}
 
     steps:
       - name: Determine release metadata
@@ -101,10 +104,10 @@ jobs:
           install -m 0755 "${COSIGN_BIN}" "${HOME}/bin/cosign"
 
       - name: Materialise cosign keypair
-        if: ${{ secrets.RELEASE_COSIGN_KEY != '' }}
+        if: ${{ env.RELEASE_COSIGN_KEY != '' }}
         env:
-          COSIGN_KEY_B64: ${{ secrets.RELEASE_COSIGN_KEY }}
-          COSIGN_PUB_B64: ${{ secrets.RELEASE_COSIGN_PUB }}
+          COSIGN_KEY_B64: ${{ env.RELEASE_COSIGN_KEY }}
+          COSIGN_PUB_B64: ${{ env.RELEASE_COSIGN_PUB }}
         run: |
           set -euo pipefail
           echo "${COSIGN_KEY_B64}" | base64 --decode > release.cosign.key
@@ -116,7 +119,7 @@ jobs:
 
       - name: Build release packages
         env:
-          COSIGN_PASSWORD: ${{ secrets.RELEASE_COSIGN_PASSWORD }}
+          COSIGN_PASSWORD: ${{ env.RELEASE_COSIGN_PASSWORD }}
         run: |
           set -euo pipefail
           make clean
