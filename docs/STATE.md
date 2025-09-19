@@ -40,11 +40,14 @@
   etcd TLS so operators have a concrete starting point before broader
   documentation lands.
 
+- A CI pipeline blueprint (`docs/CI_PIPELINE.md`) and pinned GitHub Actions
+  workflow now gate gofmt and `go test ./...` on pushes and pull requests,
+  giving the repository its first automated quality gate.
+
 ## Next Up
-- Outline the first CI/CD workflow stage (formatting + `go test ./...` gate)
-  and decide on the automation platform (e.g. GitHub Actions) so the broader
-  pipeline can be implemented incrementally without blocking on high-level
-  design questions.
+- Extend the CI pipeline with static analysis (e.g. `go vet`, `staticcheck`)
+  and caching once the baseline formatting and unit-test job has proven
+  reliable.
 
 ## Backlog
 - Establish complete CI/CD workflows covering linting, tests, packaging, SBOM,

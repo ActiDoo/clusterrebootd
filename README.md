@@ -57,6 +57,13 @@ the `PATH` before invoking the packaging target.
 Generated artefacts live under `dist/` and are ignored by git so developers can
 cleanly iterate on builds and packages without polluting commits.
 
+## Continuous Integration
+
+A GitHub Actions workflow (documented in `docs/CI_PIPELINE.md`) now runs `gofmt`
+and `go test ./...` for pushes to `main` and all pull requests.  The job uses
+pinned actions, read-only permissions, and a 15-minute timeout to provide an
+initial quality gate while the broader pipeline is built out.
+
 ## Example Configuration
 
 The repository ships an annotated sample at `examples/config.yaml` that
