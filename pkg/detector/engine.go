@@ -37,10 +37,7 @@ func (e *EvaluationError) Error() string {
 
 func (e *EvaluationError) Is(target error) bool {
 	var other *EvaluationError
-	if !errors.As(target, &other) {
-		return false
-	}
-	return true
+	return errors.As(target, &other)
 }
 
 // NewEngine constructs an Engine from the provided detectors.

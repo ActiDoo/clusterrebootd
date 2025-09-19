@@ -20,9 +20,9 @@
   contention returns 4, kill switches return 5, and the long-running `run`
   command propagates the last blocked outcome when it exits on a signal.
   Documentation covering the exit-code behaviour was added for operators.
-- The orchestration loop now retries transient runtime failures with an
-  exponential backoff and listens for SIGINT/SIGTERM so operators can stop the
-  daemon cleanly when managed by service supervisors.
+- The orchestration loop now retries transient runtime failures with a
+  jittered exponential backoff and listens for SIGINT/SIGTERM so operators can
+  stop the daemon cleanly when managed by service supervisors.
 - A reproducible dev container (Go 1.22 with etcd 3.6.4 and nfpm 2.43.1) is
   available for local development, packaging experiments, and integration
   testing.
@@ -65,13 +65,14 @@
   documentation lands.
 
 - A CI pipeline blueprint (`docs/CI_PIPELINE.md`) and pinned GitHub Actions
-  workflow now gate gofmt and `go test ./...`, then build `.deb`/`.rpm`
-  artefacts with SBOMs, checksums, and cosign signatures on every push/pull
-  request, uploading the `dist/packages/` directory for review.
+  workflow now restore module/build caches, run gofmt, `go vet`,
+  `staticcheck`, and `go test ./...`, then build `.deb`/`.rpm` artefacts with
+  SBOMs, checksums, and cosign signatures on every push/pull request,
+  uploading the `dist/packages/` directory for review.
 
 ## Next Up
-- Extend the CI pipeline with static analysis (e.g. `go vet`, `staticcheck`)
-  and caching once the formatting/unit-test and packaging stages remain stable.
+- Measure CI run times with caching/static analysis enabled and tune job
+  parallelism or cache key strategy before layering heavier integration tests.
 - Add containerised smoke tests that install the generated packages on target
   distributions to validate maintainer scripts and service wiring.
 

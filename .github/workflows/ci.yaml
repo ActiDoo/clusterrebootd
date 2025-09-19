@@ -24,6 +24,22 @@ jobs:
         with:
           go-version: '1.23.x'
 
+      - name: Cache Go modules
+        uses: actions/cache@0400d5f644dc74513175e3cd8d07132dd4860809
+        with:
+          path: |
+            ~/.cache/go-build
+            ~/go/pkg/mod
+          key: ${{ runner.os }}-go-${{ hashFiles('go.sum') }}
+          restore-keys: |
+            ${{ runner.os }}-go-
+
+      - name: Install staticcheck
+        run: |
+          set -euo pipefail
+          go install honnef.co/go/tools/cmd/staticcheck@v0.6.1
+          echo "$(go env GOPATH)/bin" >> "${GITHUB_PATH}"
+
       - name: Verify formatting
         run: |
           set -euo pipefail
@@ -38,6 +54,16 @@ jobs:
             echo "${UNFORMATTED}" >&2
             exit 1
           fi
+
+      - name: Run go vet
+        run: |
+          set -euo pipefail
+          go vet ./...
+
+      - name: Run staticcheck
+        run: |
+          set -euo pipefail
+          staticcheck ./...
 
       - name: Run unit tests
         run: |
@@ -58,6 +84,16 @@ jobs:
         uses: actions/setup-go@44694675825211faa026b3c33043df3e48a5fa00
         with:
           go-version: '1.23.x'
+
+      - name: Cache Go modules
+        uses: actions/cache@0400d5f644dc74513175e3cd8d07132dd4860809
+        with:
+          path: |
+            ~/.cache/go-build
+            ~/go/pkg/mod
+          key: ${{ runner.os }}-go-${{ hashFiles('go.sum') }}
+          restore-keys: |
+            ${{ runner.os }}-go-
 
       - name: Install packaging toolchain
         run: |

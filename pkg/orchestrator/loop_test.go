@@ -3,6 +3,7 @@ package orchestrator
 import (
 	"context"
 	"errors"
+	"math/rand"
 	"sync"
 	"testing"
 	"time"
@@ -160,6 +161,50 @@ func TestLoopRetriesOnRunnerError(t *testing.T) {
 	}
 }
 
+func TestLoopErrorBackoffJitter(t *testing.T) {
+	cfg := baseConfig()
+	runner := &fakeLoopRunner{}
+	executor := &fakeExecutor{}
+
+	loop, err := NewLoop(cfg, runner, executor,
+		WithLoopInterval(0),
+		WithLoopSleepFunc(func(time.Duration) {}),
+		WithLoopErrorBackoff(2*time.Second, 8*time.Second),
+		WithLoopRandSource(rand.NewSource(1)),
+	)
+	if err != nil {
+		t.Fatalf("failed to create loop: %v", err)
+	}
+
+	expectedDelays := []time.Duration{
+		2 * time.Second,
+		3159276016 * time.Nanosecond,
+		7636376015 * time.Nanosecond,
+		4644565053 * time.Nanosecond,
+		7562143253 * time.Nanosecond,
+	}
+	expectedBackoffs := []time.Duration{
+		2 * time.Second,
+		4 * time.Second,
+		8 * time.Second,
+		8 * time.Second,
+		8 * time.Second,
+	}
+
+	for i := range expectedDelays {
+		delay := loop.nextErrorDelay()
+		if delay != expectedDelays[i] {
+			t.Fatalf("unexpected delay[%d]: got %v want %v", i, delay, expectedDelays[i])
+		}
+		if loop.errorBackoff != expectedBackoffs[i] {
+			t.Fatalf("unexpected backoff[%d]: got %v want %v", i, loop.errorBackoff, expectedBackoffs[i])
+		}
+		if delay < 2*time.Second || delay > 8*time.Second {
+			t.Fatalf("delay[%d] out of bounds: %v", i, delay)
+		}
+	}
+}
+
 func TestLoopAppliesErrorBackoff(t *testing.T) {
 	cfg := baseConfig()
 	transient := errors.New("transient")
@@ -204,8 +249,8 @@ func TestLoopAppliesErrorBackoff(t *testing.T) {
 	if sleeps[0] != 5*time.Millisecond {
 		t.Fatalf("expected first backoff to be 5ms, got %v", sleeps[0])
 	}
-	if sleeps[1] != 10*time.Millisecond {
-		t.Fatalf("expected second backoff to double to 10ms, got %v", sleeps[1])
+	if sleeps[1] < 5*time.Millisecond || sleeps[1] > 10*time.Millisecond {
+		t.Fatalf("expected second backoff within [5ms,10ms], got %v", sleeps[1])
 	}
 }
 
