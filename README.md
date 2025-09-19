@@ -45,15 +45,25 @@ The repository ships with a `Makefile` that standardises common developer tasks:
 - `make build` compiles the `reboot-coordinator` binary for Linux using static
   linking defaults and stages the artefact under `dist/`.
 - `make test` executes `go test ./...`.
-- `make package` cross-compiles the binary for `amd64` and `arm64` and invokes
+- `make package` cross-compiles the binary for `amd64` and `arm64`, invokes
   [`nfpm`](https://nfpm.goreleaser.com/) to produce `.deb` and `.rpm` packages in
-  `dist/packages/`.
+  `dist/packages/`, generates CycloneDX SBOMs via
+  [`syft`](https://github.com/anchore/syft) under `dist/packages/sbom/`, writes
+  SHA-256/512 manifests to `dist/packages/checksums/` (plus aggregated
+  `SHA256SUMS`/`SHA512SUMS` files), and produces cosign signatures in
+  `dist/packages/signatures/` when a signing key is provided.
 
 Set `ARCHES=amd64` (or `arm64`) to restrict the architectures, override
 `VERSION` to package a specific release string, or point `NFPM` to an alternate
-`nfpm` binary when developing inside containers.  Ensure `nfpm` is available in
-the `PATH` before invoking the packaging target; the provided dev container
-ships with version 2.43.1 pre-installed.
+`nfpm` binary when developing inside containers.  The packaging target expects
+`nfpm`, `syft`, and `cosign` to be on the `PATH`; pass
+`SIGNING_KEY=/path/to/cosign.key` and
+`SIGNING_PUBKEY=/path/to/cosign.pub` to sign artefacts with your production
+keypair.  Export `COSIGN_PASSWORD` (and optionally `COSIGN_YES=true`) when using
+password-protected keys so signing runs non-interactively.  The helper script
+`packaging/scripts/verify_artifacts.sh` reruns the
+checksum and signature validation when given the public key via
+`COSIGN_PUBLIC_KEY=/path/to/cosign.pub`.
 
 Generated artefacts live under `dist/` and are ignored by git so developers can
 cleanly iterate on builds and packages without polluting commits.
@@ -61,9 +71,13 @@ cleanly iterate on builds and packages without polluting commits.
 ## Continuous Integration
 
 A GitHub Actions workflow (documented in `docs/CI_PIPELINE.md`) now runs `gofmt`
-and `go test ./...` for pushes to `main` and all pull requests.  The job uses
-pinned actions, read-only permissions, and a 15-minute timeout to provide an
-initial quality gate while the broader pipeline is built out.
+and `go test ./...` for pushes to `main` and all pull requests, then builds the
+Debian/RPM packages via `make package`.  The packaging job installs pinned
+versions of `nfpm`, `syft`, and `cosign`, generates SBOMs, checksums, and
+cosign signatures, verifies them with
+`packaging/scripts/verify_artifacts.sh`, and uploads the resulting artefacts for
+review.  All actions are pinned by commit SHA and the workflow continues to use
+read-only permissions to preserve repository integrity.
 
 ## Example Configuration
 

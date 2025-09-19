@@ -48,17 +48,20 @@
   documentation lands.
 
 - A CI pipeline blueprint (`docs/CI_PIPELINE.md`) and pinned GitHub Actions
-  workflow now gate gofmt and `go test ./...` on pushes and pull requests,
-  giving the repository its first automated quality gate.
+  workflow now gate gofmt and `go test ./...`, then build `.deb`/`.rpm`
+  artefacts with SBOMs, checksums, and cosign signatures on every push/pull
+  request, uploading the `dist/packages/` directory for review.
 
 ## Next Up
 - Extend the CI pipeline with static analysis (e.g. `go vet`, `staticcheck`)
-  and caching once the baseline formatting and unit-test job has proven
-  reliable.
+  and caching once the formatting/unit-test and packaging stages remain stable.
+- Add containerised smoke tests that install the generated packages on target
+  distributions to validate maintainer scripts and service wiring.
 
 ## Backlog
-- Establish complete CI/CD workflows covering linting, tests, packaging, SBOM,
-  and signing after the initial pipeline slice proves out.
+- Promote the packaging workflow into a release pipeline that publishes
+  artefacts, provenance, and signatures to GitHub Releases once production
+  keys are available.
 - Expand operator documentation beyond the sample config to include install
   guides, health script best practices, and troubleshooting once the reference
   example is reviewed.
