@@ -72,6 +72,7 @@ type Runner struct {
 	lockEnabled    bool
 	lockSkipReason string
 	now            func() time.Time
+	commandEnv     map[string]string
 }
 
 // Option configures a Runner.
@@ -130,6 +131,14 @@ func WithLockAcquisition(enabled bool, reason string) Option {
 	}
 }
 
+// WithCommandEnvironment overrides the environment used to expand reboot command arguments.
+// The provided map is copied to avoid accidental mutations by callers.
+func WithCommandEnvironment(env map[string]string) Option {
+	return func(r *Runner) {
+		r.commandEnv = cloneEnv(env)
+	}
+}
+
 // WithTimeSource injects a custom time source, enabling deterministic tests.
 func WithTimeSource(fn func() time.Time) Option {
 	return func(r *Runner) {
@@ -166,6 +175,7 @@ func NewRunner(cfg *config.Config, detectors DetectorEvaluator, healthRunner Hea
 		maxLockTries:   5,
 		reporter:       NoopReporter{},
 		lockEnabled:    true,
+		commandEnv:     cfg.BaseEnvironment(),
 	}
 
 	for _, opt := range opts {
@@ -189,6 +199,9 @@ func NewRunner(cfg *config.Config, detectors DetectorEvaluator, healthRunner Hea
 	}
 	if runner.now == nil {
 		runner.now = time.Now
+	}
+	if runner.commandEnv == nil {
+		runner.commandEnv = cfg.BaseEnvironment()
 	}
 
 	windowsEval, err := windows.NewEvaluator(cfg.Windows.Allow, cfg.Windows.Deny)
@@ -268,9 +281,7 @@ func (r *Runner) RunOnce(ctx context.Context) (out Outcome, err error) {
 		}
 		out.Message = msg
 		out.DryRun = r.cfg.DryRun
-		if len(r.cfg.RebootCommand) > 0 {
-			out.Command = append([]string(nil), r.cfg.RebootCommand...)
-		}
+		out.Command = r.expandCommand(r.cfg.RebootCommand)
 		return out, nil
 	}
 
@@ -323,9 +334,45 @@ func (r *Runner) RunOnce(ctx context.Context) (out Outcome, err error) {
 	out.Status = OutcomeReady
 	out.Message = "reboot prerequisites satisfied"
 	out.DryRun = r.cfg.DryRun
-	out.Command = append([]string(nil), r.cfg.RebootCommand...)
+	out.Command = r.expandCommand(r.cfg.RebootCommand)
 
 	return out, nil
+}
+
+func cloneEnv(src map[string]string) map[string]string {
+	if len(src) == 0 {
+		return nil
+	}
+	dst := make(map[string]string, len(src))
+	for k, v := range src {
+		dst[k] = v
+	}
+	return dst
+}
+
+func (r *Runner) expandCommand(command []string) []string {
+	if len(command) == 0 {
+		return nil
+	}
+	expanded := make([]string, len(command))
+	for i, arg := range command {
+		expanded[i] = expandWithEnv(arg, r.commandEnv)
+	}
+	return expanded
+}
+
+func expandWithEnv(input string, env map[string]string) string {
+	if !strings.Contains(input, "$") {
+		return input
+	}
+	return os.Expand(input, func(key string) string {
+		if env != nil {
+			if val, ok := env[key]; ok {
+				return val
+			}
+		}
+		return os.Getenv(key)
+	})
 }
 
 func (r *Runner) acquireLock(ctx context.Context) (lock.Lease, bool, int, error) {
