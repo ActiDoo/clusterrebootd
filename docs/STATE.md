@@ -68,6 +68,10 @@
   guidance now show how to combine detectors, the health gate, metrics, and
   etcd TLS so operators have a concrete starting point before broader
   documentation lands.
+- A comprehensive operations guide (`docs/OPERATIONS.md`) now walks operators
+  through installation paths, configuration workflows, health script practices,
+  observability, maintenance operations, and troubleshooting so rollouts do not
+  rely on tribal knowledge.
 
 - A CI pipeline blueprint (`docs/CI_PIPELINE.md`) and pinned GitHub Actions
   workflow now restore module/build caches, run gofmt, `go vet`,
@@ -89,9 +93,6 @@
 ## Backlog
 - Extend the release workflow with Sigstore/SLSA provenance once production
   signing keys are wired in.
-- Expand operator documentation beyond the sample config to include install
-  guides, health script best practices, and troubleshooting once the reference
-  example is reviewed.
 - Extend the smoke tests to exercise service enablement under systemd once a
   container harness that can launch `systemd` safely is available.
 
