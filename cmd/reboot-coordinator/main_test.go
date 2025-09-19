@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/clusterrebootd/clusterrebootd/internal/testutil"
+	"github.com/clusterrebootd/clusterrebootd/pkg/config"
 	"github.com/clusterrebootd/clusterrebootd/pkg/lock"
 	"github.com/clusterrebootd/clusterrebootd/pkg/orchestrator"
 )
@@ -460,5 +461,82 @@ lock_ttl_sec: 120
 	}
 	if !strings.Contains(output, "planned reboot command") {
 		t.Fatalf("expected planned reboot command in skip-lock output, got: %s", output)
+	}
+}
+
+func TestBuildBaseEnvironmentIncludesPolicyContext(t *testing.T) {
+	minFrac := 0.6
+	minAbs := 3
+	cfg := &config.Config{
+		NodeName:       "node-a",
+		DryRun:         true,
+		LockKey:        "/cluster/lock",
+		EtcdEndpoints:  []string{"10.0.0.10:2379", "10.0.0.11:2379"},
+		KillSwitchFile: "/etc/reboot-coordinator/disable",
+		ClusterPolicies: config.ClusterPolicies{
+			MinHealthyFraction:       &minFrac,
+			MinHealthyAbsolute:       &minAbs,
+			ForbidIfOnlyFallbackLeft: true,
+			FallbackNodes:            []string{"control-plane-a", "control-plane-b"},
+		},
+		Windows: config.WindowsConfig{
+			Allow: []string{"02:00-05:00"},
+			Deny:  []string{"sat-sun"},
+		},
+	}
+
+	env := buildBaseEnvironment(cfg)
+
+	if got := env["RC_NODE_NAME"]; got != cfg.NodeName {
+		t.Fatalf("expected RC_NODE_NAME %q, got %q", cfg.NodeName, got)
+	}
+	if got := env["RC_DRY_RUN"]; got != "true" {
+		t.Fatalf("expected RC_DRY_RUN true, got %q", got)
+	}
+	if got := env["RC_ETCD_ENDPOINTS"]; got != "10.0.0.10:2379,10.0.0.11:2379" {
+		t.Fatalf("unexpected RC_ETCD_ENDPOINTS: %q", got)
+	}
+	if got := env["RC_CLUSTER_MIN_HEALTHY_FRACTION"]; got != "0.6" {
+		t.Fatalf("unexpected RC_CLUSTER_MIN_HEALTHY_FRACTION: %q", got)
+	}
+	if got := env["RC_CLUSTER_MIN_HEALTHY_ABSOLUTE"]; got != "3" {
+		t.Fatalf("unexpected RC_CLUSTER_MIN_HEALTHY_ABSOLUTE: %q", got)
+	}
+	if got := env["RC_CLUSTER_FORBID_IF_ONLY_FALLBACK_LEFT"]; got != "true" {
+		t.Fatalf("unexpected RC_CLUSTER_FORBID_IF_ONLY_FALLBACK_LEFT: %q", got)
+	}
+	if got := env["RC_CLUSTER_FALLBACK_NODES"]; got != "control-plane-a,control-plane-b" {
+		t.Fatalf("unexpected RC_CLUSTER_FALLBACK_NODES: %q", got)
+	}
+	if got := env["RC_WINDOWS_ALLOW"]; got != "02:00-05:00" {
+		t.Fatalf("unexpected RC_WINDOWS_ALLOW: %q", got)
+	}
+	if got := env["RC_WINDOWS_DENY"]; got != "sat-sun" {
+		t.Fatalf("unexpected RC_WINDOWS_DENY: %q", got)
+	}
+}
+
+func TestBuildBaseEnvironmentOmitsUnsetPolicyContext(t *testing.T) {
+	cfg := &config.Config{}
+
+	env := buildBaseEnvironment(cfg)
+
+	if _, ok := env["RC_CLUSTER_MIN_HEALTHY_FRACTION"]; ok {
+		t.Fatalf("expected RC_CLUSTER_MIN_HEALTHY_FRACTION to be absent")
+	}
+	if _, ok := env["RC_CLUSTER_MIN_HEALTHY_ABSOLUTE"]; ok {
+		t.Fatalf("expected RC_CLUSTER_MIN_HEALTHY_ABSOLUTE to be absent")
+	}
+	if _, ok := env["RC_CLUSTER_FORBID_IF_ONLY_FALLBACK_LEFT"]; ok {
+		t.Fatalf("expected RC_CLUSTER_FORBID_IF_ONLY_FALLBACK_LEFT to be absent")
+	}
+	if _, ok := env["RC_CLUSTER_FALLBACK_NODES"]; ok {
+		t.Fatalf("expected RC_CLUSTER_FALLBACK_NODES to be absent")
+	}
+	if _, ok := env["RC_WINDOWS_ALLOW"]; ok {
+		t.Fatalf("expected RC_WINDOWS_ALLOW to be absent")
+	}
+	if _, ok := env["RC_WINDOWS_DENY"]; ok {
+		t.Fatalf("expected RC_WINDOWS_DENY to be absent")
 	}
 }

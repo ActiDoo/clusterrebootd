@@ -25,6 +25,9 @@
 - CLI run mode now wires the reporter into a JSON logger on stderr and an
   optional Prometheus metrics listener, exporting the address to the health
   script environment for runtime validation.
+- The health script base environment now includes cluster policy thresholds,
+  fallback node lists, and configured maintenance windows so gating logic can
+  enforce operator intent without re-reading the configuration file.
 - A packaging blueprint (`docs/PACKAGING_BLUEPRINT.md`) documents the target
   systemd contract, filesystem layout, and `nfpm` packaging skeleton so
   implementation can proceed without revisiting foundational decisions.

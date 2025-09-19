@@ -74,8 +74,12 @@ demonstrates how to wire the implemented features together:
   command with a guard for its reboot-required exit code.
 - Cluster guardrails: health script location and timeout, an operator-controlled
   kill switch file, and cluster policy hints (minimum healthy nodes and
-  designated fallback nodes) that are exported to the health script
-  environment.
+  designated fallback nodes) that are exported to the health script environment
+  via `RC_CLUSTER_MIN_HEALTHY_FRACTION`, `RC_CLUSTER_MIN_HEALTHY_ABSOLUTE`,
+  `RC_CLUSTER_FORBID_IF_ONLY_FALLBACK_LEFT`, and
+  `RC_CLUSTER_FALLBACK_NODES`.  If reboot windows are configured they are
+  injected through `RC_WINDOWS_ALLOW` and `RC_WINDOWS_DENY` so scripts can
+  honour operator-defined maintenance schedules.
 - Distributed coordination: three etcd endpoints, an explicit namespace,
   lock key, and optional mutual TLS credentials.
 - Observability: metrics listener enabled so the daemon injects
