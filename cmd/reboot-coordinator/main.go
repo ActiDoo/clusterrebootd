@@ -388,9 +388,7 @@ func buildBaseEnvironment(cfg *config.Config) map[string]string {
 	if cfg.ClusterPolicies.MinHealthyAbsolute != nil {
 		env["RC_CLUSTER_MIN_HEALTHY_ABSOLUTE"] = strconv.Itoa(*cfg.ClusterPolicies.MinHealthyAbsolute)
 	}
-	if cfg.ClusterPolicies.ForbidIfOnlyFallbackLeft {
-		env["RC_CLUSTER_FORBID_IF_ONLY_FALLBACK_LEFT"] = strconv.FormatBool(cfg.ClusterPolicies.ForbidIfOnlyFallbackLeft)
-	}
+	env["RC_CLUSTER_FORBID_IF_ONLY_FALLBACK_LEFT"] = strconv.FormatBool(cfg.ClusterPolicies.ForbidIfOnlyFallbackLeft)
 	if len(cfg.ClusterPolicies.FallbackNodes) > 0 {
 		env["RC_CLUSTER_FALLBACK_NODES"] = strings.Join(cfg.ClusterPolicies.FallbackNodes, ",")
 	}

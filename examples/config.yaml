@@ -17,6 +17,9 @@ reboot_required_detectors:
     timeout_sec: 10
 
 health_script: /usr/local/bin/cluster-health-check.sh
+# The orchestrator annotates each execution with RC_PHASE, RC_LOCK_ENABLED,
+# RC_LOCK_HELD, and RC_LOCK_ATTEMPTS so scripts can distinguish pre/post-lock
+# runs and lock contention.
 health_timeout_sec: 45
 check_interval_sec: 300
 backoff_min_sec: 5
@@ -56,6 +59,8 @@ cluster_policies:
   fallback_nodes:
     - control-plane-a
     - control-plane-b
+  # RC_CLUSTER_FORBID_IF_ONLY_FALLBACK_LEFT is always exported as "true"/"false"
+  # so health scripts do not need to handle missing environment variables.
 
 metrics:
   enabled: true

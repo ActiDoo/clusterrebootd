@@ -28,6 +28,10 @@
 - The health script base environment now includes cluster policy thresholds,
   fallback node lists, and configured maintenance windows so gating logic can
   enforce operator intent without re-reading the configuration file.
+- Health script executions are annotated with runtime lock context via
+  `RC_PHASE`, `RC_LOCK_ENABLED`, `RC_LOCK_HELD`, and `RC_LOCK_ATTEMPTS`, giving
+  scripts enough detail to reason about contention and ensure post-lock checks
+  remain valid without bespoke plumbing.
 - A packaging blueprint (`docs/PACKAGING_BLUEPRINT.md`) documents the target
   systemd contract, filesystem layout, and `nfpm` packaging skeleton so
   implementation can proceed without revisiting foundational decisions.
