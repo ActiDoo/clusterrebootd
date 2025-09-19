@@ -85,10 +85,7 @@ func (e *ValidationError) Error() string {
 
 func (e *ValidationError) Is(target error) bool {
 	var other *ValidationError
-	if !errors.As(target, &other) {
-		return false
-	}
-	return true
+	return errors.As(target, &other)
 }
 
 // Load reads, parses, and validates a configuration from disk.

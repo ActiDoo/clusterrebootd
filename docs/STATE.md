@@ -65,13 +65,14 @@
   documentation lands.
 
 - A CI pipeline blueprint (`docs/CI_PIPELINE.md`) and pinned GitHub Actions
-  workflow now gate gofmt and `go test ./...`, then build `.deb`/`.rpm`
-  artefacts with SBOMs, checksums, and cosign signatures on every push/pull
-  request, uploading the `dist/packages/` directory for review.
+  workflow now restore module/build caches, run gofmt, `go vet`,
+  `staticcheck`, and `go test ./...`, then build `.deb`/`.rpm` artefacts with
+  SBOMs, checksums, and cosign signatures on every push/pull request,
+  uploading the `dist/packages/` directory for review.
 
 ## Next Up
-- Extend the CI pipeline with static analysis (e.g. `go vet`, `staticcheck`)
-  and caching once the formatting/unit-test and packaging stages remain stable.
+- Measure CI run times with caching/static analysis enabled and tune job
+  parallelism or cache key strategy before layering heavier integration tests.
 - Add containerised smoke tests that install the generated packages on target
   distributions to validate maintainer scripts and service wiring.
 
