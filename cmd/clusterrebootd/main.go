@@ -12,7 +12,6 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
-	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -117,7 +116,7 @@ func commandRunWithWriters(args []string, stdout, stderr io.Writer) int {
 		return exitConfigError
 	}
 
-	baseEnv := buildBaseEnvironment(cfg)
+	baseEnv := cfg.BaseEnvironment()
 
 	tlsConfig, err := buildEtcdTLSConfig(cfg.EtcdTLS)
 	if err != nil {
@@ -210,10 +209,12 @@ func commandRunWithWriters(args []string, stdout, stderr io.Writer) int {
 	reporter := orchestrator.NewStructuredReporter(cfg.NodeName, jsonLogger, metricsCollector)
 
 	runnerOptions := []orchestrator.Option{orchestrator.WithReporter(reporter)}
+  runnerOptions = append(runnerOptions, orchestrator.WithCommandEnvironment(baseEnv))
 	if cooldownManager != nil {
 		runnerOptions = append(runnerOptions, orchestrator.WithCooldownManager(cooldownManager))
 	}
 	runner, err := orchestrator.NewRunner(cfg, engine, healthRunner, locker, runnerOptions...)
+  
 	if err != nil {
 		fmt.Fprintf(stderr, "failed to initialise orchestrator: %v\n", err)
 		return exitRunError
@@ -327,7 +328,7 @@ func commandStatusWithWriters(args []string, stdout, stderr io.Writer) int {
 		return exitConfigError
 	}
 
-	baseEnv := buildBaseEnvironment(&cfgCopy)
+	baseEnv := cfgCopy.BaseEnvironment()
 	if *skipHealth {
 		baseEnv["RC_SKIP_HEALTH"] = "true"
 	}
@@ -402,7 +403,7 @@ func commandStatusWithWriters(args []string, stdout, stderr io.Writer) int {
 		defer cooldownManager.Close()
 	}
 
-	runnerOptions := []orchestrator.Option{orchestrator.WithMaxLockAttempts(1)}
+	runnerOptions := []orchestrator.Option{orchestrator.WithMaxLockAttempts(1), orchestrator.WithCommandEnvironment(baseEnv)}
 	if *skipLock {
 		runnerOptions = append(runnerOptions, orchestrator.WithLockAcquisition(false, "lock acquisition skipped (--skip-lock)"))
 	}

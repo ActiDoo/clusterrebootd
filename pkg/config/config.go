@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -228,6 +229,42 @@ func (c *Config) applyDefaults() {
 	for i := range c.RebootRequiredDetectors {
 		c.RebootRequiredDetectors[i].applyDefaults(i)
 	}
+}
+
+// BaseEnvironment returns the static environment variables derived from the configuration.
+// The resulting map can be extended with runtime annotations (metrics endpoints, skip flags)
+// before injecting it into health scripts or reboot command expansion.
+func (c *Config) BaseEnvironment() map[string]string {
+	env := map[string]string{
+		"RC_NODE_NAME": c.NodeName,
+		"RC_DRY_RUN":   strconv.FormatBool(c.DryRun),
+	}
+	if strings.TrimSpace(c.LockKey) != "" {
+		env["RC_LOCK_KEY"] = c.LockKey
+	}
+	if len(c.EtcdEndpoints) > 0 {
+		env["RC_ETCD_ENDPOINTS"] = strings.Join(c.EtcdEndpoints, ",")
+	}
+	if strings.TrimSpace(c.KillSwitchFile) != "" {
+		env["RC_KILL_SWITCH_FILE"] = c.KillSwitchFile
+	}
+	if c.ClusterPolicies.MinHealthyFraction != nil {
+		env["RC_CLUSTER_MIN_HEALTHY_FRACTION"] = strconv.FormatFloat(*c.ClusterPolicies.MinHealthyFraction, 'f', -1, 64)
+	}
+	if c.ClusterPolicies.MinHealthyAbsolute != nil {
+		env["RC_CLUSTER_MIN_HEALTHY_ABSOLUTE"] = strconv.Itoa(*c.ClusterPolicies.MinHealthyAbsolute)
+	}
+	env["RC_CLUSTER_FORBID_IF_ONLY_FALLBACK_LEFT"] = strconv.FormatBool(c.ClusterPolicies.ForbidIfOnlyFallbackLeft)
+	if len(c.ClusterPolicies.FallbackNodes) > 0 {
+		env["RC_CLUSTER_FALLBACK_NODES"] = strings.Join(c.ClusterPolicies.FallbackNodes, ",")
+	}
+	if len(c.Windows.Allow) > 0 {
+		env["RC_WINDOWS_ALLOW"] = strings.Join(c.Windows.Allow, ",")
+	}
+	if len(c.Windows.Deny) > 0 {
+		env["RC_WINDOWS_DENY"] = strings.Join(c.Windows.Deny, ",")
+	}
+	return env
 }
 
 func (d *DetectorConfig) applyDefaults(index int) {

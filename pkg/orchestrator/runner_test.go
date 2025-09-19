@@ -587,6 +587,38 @@ func TestRunnerReadyDryRun(t *testing.T) {
 	}
 }
 
+func TestRunnerExpandsRebootCommandPlaceholders(t *testing.T) {
+	cfg := baseConfig()
+	cfg.RebootCommand = []string{"/sbin/shutdown", "-r", "now", "coordinated reboot for ${RC_NODE_NAME}"}
+	lease := &fakeLease{}
+	engine := &fakeEngine{steps: []evalStep{{requires: true}, {requires: true}}}
+	healthRunner := &fakeHealth{steps: []healthStep{{result: health.Result{ExitCode: 0}}, {result: health.Result{ExitCode: 0}}}}
+	locker := &fakeLocker{outcomes: []acquireOutcome{{lease: lease}}}
+
+	runner, err := NewRunner(cfg, engine, healthRunner, locker)
+	if err != nil {
+		t.Fatalf("failed to create runner: %v", err)
+	}
+
+	outcome, err := runner.RunOnce(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if outcome.Status != OutcomeReady {
+		t.Fatalf("expected OutcomeReady, got %s", outcome.Status)
+	}
+	if len(outcome.Command) != len(cfg.RebootCommand) {
+		t.Fatalf("expected command length %d, got %d", len(cfg.RebootCommand), len(outcome.Command))
+	}
+	want := "coordinated reboot for " + cfg.NodeName
+	if got := outcome.Command[len(outcome.Command)-1]; got != want {
+		t.Fatalf("expected expanded command argument %q, got %q", want, got)
+	}
+	if cfg.RebootCommand[len(cfg.RebootCommand)-1] != "coordinated reboot for ${RC_NODE_NAME}" {
+		t.Fatalf("expected original reboot command to remain unchanged, got %q", cfg.RebootCommand[len(cfg.RebootCommand)-1])
+	}
+}
+
 func TestRunnerHealthError(t *testing.T) {
 	cfg := baseConfig()
 	engine := &fakeEngine{steps: []evalStep{{requires: true}}}
