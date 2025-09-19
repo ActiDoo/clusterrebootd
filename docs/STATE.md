@@ -55,6 +55,11 @@
 - Packaging assets are now exercised by automated tests that verify the config
   template's safe defaults, the systemd unit contract, maintainer script
   safeguards, and the `nfpm` file layout so regressions are caught early.
+- Containerised smoke tests now build the Debian and RPM packages via the `nfpm`
+  configuration and install them inside Debian, Ubuntu, and Rocky Linux
+  containers.  The suite validates package manager integration, ensures the
+  binary starts, and confirms packaged assets land at the expected paths while
+  gracefully skipping when no container runtime is available.
 - A top-level `Makefile` now standardises local builds, cross-compilation for
   `amd64`/`arm64`, and wraps `nfpm` so developers can reproducibly stage
   binaries in `dist/` and generate `.deb`/`.rpm` packages without ad-hoc
@@ -78,8 +83,8 @@
 ## Next Up
 - Measure CI run times with caching/static analysis enabled and tune job
   parallelism or cache key strategy before layering heavier integration tests.
-- Add containerised smoke tests that install the generated packages on target
-  distributions to validate maintainer scripts and service wiring.
+- Integrate the containerised smoke tests into CI so packaging regressions are
+  detected automatically once runner support for Docker/Podman is provisioned.
 
 ## Backlog
 - Extend the release workflow with Sigstore/SLSA provenance once production
@@ -87,9 +92,8 @@
 - Expand operator documentation beyond the sample config to include install
   guides, health script best practices, and troubleshooting once the reference
   example is reviewed.
-- Design automated install/uninstall validation (e.g. container-based smoke
-  tests) for the produced packages once the initial packaging skeleton is in
-  place.
+- Extend the smoke tests to exercise service enablement under systemd once a
+  container harness that can launch `systemd` safely is available.
 
 ## Open Questions
 - Finalise the exact etcd keyspace layout and RBAC policy for the distributed lock.
