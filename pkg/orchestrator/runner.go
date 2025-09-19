@@ -257,6 +257,7 @@ func NewRunner(cfg *config.Config, detectors DetectorEvaluator, healthRunner Hea
 	}
 	if runner.cooldownWindow > 0 && runner.cooldown == nil {
 		return nil, errors.New("cooldown interval configured but no cooldown manager provided")
+	}
 	if runner.commandEnv == nil {
 		runner.commandEnv = cfg.BaseEnvironment()
 	}
