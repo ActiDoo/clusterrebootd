@@ -13,7 +13,6 @@ import (
 
 	clientv3 "go.etcd.io/etcd/client/v3"
 	"go.etcd.io/etcd/client/v3/concurrency"
-	"google.golang.org/grpc"
 )
 
 // EtcdManagerOptions configures the etcd-backed lock manager.
@@ -92,7 +91,6 @@ func NewEtcdManager(opts EtcdManagerOptions) (*EtcdManager, error) {
 		DialTimeout:         dialTimeout,
 		TLS:                 opts.TLS,
 		RejectOldCluster:    true,
-		DialOptions:         []grpc.DialOption{grpc.WithBlock()},
 		PermitWithoutStream: true,
 	}
 

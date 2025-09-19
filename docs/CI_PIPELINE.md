@@ -35,14 +35,23 @@ The first workflow stage enforces baseline hygiene checks across pushes to the
   1. Check out the repository using a pinned `actions/checkout` commit.
   2. Install the toolchain with `actions/setup-go`, pinned to a published
      commit and configured to install the latest Go `1.23` patch.
-  3. Run a formatting guard that executes `gofmt -l` against the tracked Go
+  3. Restore the Go module and build caches via `actions/cache` keyed on
+     `go.sum` so repeat runs avoid re-downloading dependencies while cache
+     misses still exercise cold-start paths.
+  4. Install a pinned release of `staticcheck` (`v0.6.1`) so the analyzer runs
+     deterministically.
+  5. Run a formatting guard that executes `gofmt -l` against the tracked Go
      sources (via `git ls-files '*.go'`) and fails if any files require
      formatting.
-  4. Execute `go test ./...` to run the unit suite.
+  6. Execute `go vet ./...` to surface compiler-assisted issues (unused code,
+     suspicious constructs) before tests run.
+  7. Execute `staticcheck ./...` for broader static analysis coverage.
+  8. Execute `go test ./...` to run the unit suite.
 
 The formatting script exits early when the repository tracks no Go sources so
-that ancillary documentation-only changes do not fail spuriously.  The job caps
-runtime at 15 minutes to prevent hung builds from tying up runners indefinitely.
+that ancillary documentation-only changes do not fail spuriously.  The analyzers
+run before the test suite so lint failures short-circuit quickly, and the module
+cache keeps reruns within the 15-minute job timeout without masking regressions.
 
 ## Stage 2 – Packaging and Supply-Chain Artefacts
 
@@ -53,7 +62,8 @@ artefacts for human review via the workflow summary.
 
 - **Trigger:** Same as stage one; executes on every push to `main` and all pull
   requests so supply-chain artefacts are continuously exercised.
-- **Toolchain provisioning:** The job downloads pinned versions of `nfpm`
+- **Toolchain provisioning:** The job restores the Go module/build caches,
+  then downloads pinned versions of `nfpm`
   (`v2.37.0`), `syft` (`v1.14.0`), and `cosign` (`v2.2.4`).  Release checksums
   are verified before the binaries are installed into the runner’s `~/bin`
   directory to guard against tampering.
@@ -94,14 +104,14 @@ artefacts for human review via the workflow summary.
 - **Determinism:** The job uses a single runner image and a fixed Go version
   family to avoid behaviour drift between contributors.  We will expand the
   matrix (for example to exercise multiple Go releases) only when necessary.
-- **Resilience:** Explicit timeouts and minimal dependencies reduce external
-  points of failure.  Future enhancements can add module caching once run-time
-  characteristics are measured to ensure caches do not mask correctness issues.
+- **Resilience:** Explicit timeouts, module/build caches keyed by `go.sum`, and
+  minimal external dependencies reduce points of failure while keeping
+  rerun times predictable.
 
 ## Roadmap for Later Stages
 
-- Introduce static analysis (`go vet`, `staticcheck`) in a dedicated stage once
-  the baseline job is stable.
+- Evaluate additional analyzers or custom linting rules once the current
+  `go vet`/`staticcheck` coverage has baked in across multiple releases.
 - Layer containerised smoke tests that install the produced packages inside
   representative distributions to validate maintainer scripts and service
   wiring.
