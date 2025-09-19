@@ -57,15 +57,19 @@ it for your environment, and run the daemon with `clusterrebootd run
    namespace, and `lock_key`; ensure `lock_ttl_sec` exceeds the health timeout so
    the lease outlives the slowest permissible health check.  Enable mutual TLS by
    providing the CA, client certificate, and key when required.【F:examples/config.yaml†L57-L83】【F:cmd/clusterrebootd/main.go†L218-L251】【F:pkg/config/config.go†L70-L117】
-4. **Set cluster policies and maintenance windows** – `cluster_policies`
+4. **Throttle cluster-wide reboots** – Set `min_reboot_interval_sec` to enforce a
+   cluster-wide cooldown after each successful reboot.  The orchestrator records
+   the interval in etcd and refuses new reboot attempts until the window expires,
+   preventing back-to-back maintenance events.【F:examples/config.yaml†L23-L30】【F:cmd/clusterrebootd/main.go†L233-L272】【F:pkg/orchestrator/runner.go†L311-L376】
+5. **Set cluster policies and maintenance windows** – `cluster_policies`
    expresses minimum healthy nodes and fallback protections.  Maintenance windows
    allow operators to block or explicitly permit reboots using cron-like day/time
    ranges; deny rules always win, while allow rules opt the coordinator into the
    listed windows.【F:examples/config.yaml†L85-L112】【F:pkg/windows/windows.go†L1-L123】
-5. **Wire observability and safety toggles** – Define `kill_switch_file` so a
+6. **Wire observability and safety toggles** – Define `kill_switch_file` so a
    single touch blocks reboots, and enable the Prometheus listener via
    `metrics.enabled`/`metrics.listen` when metrics are required.【F:examples/config.yaml†L41-L47】【F:examples/config.yaml†L114-L118】【F:cmd/clusterrebootd/main.go†L193-L252】
-6. **Validate** – Run `clusterrebootd validate-config --config
+7. **Validate** – Run `clusterrebootd validate-config --config
    /etc/clusterrebootd/config.yaml` to fail fast on schema or semantic
    mistakes.  Follow up with `clusterrebootd simulate` to execute the
    detectors once and review their output without contacting etcd or running the

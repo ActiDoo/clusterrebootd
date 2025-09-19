@@ -18,8 +18,8 @@ service that favours safety, explicit configuration, and verifiable supply-chain
   node identity, cluster policies, maintenance windows, and optional metrics endpoints.
 - **Distributed coordination** – etcd-backed mutex with annotated metadata (`node`, `pid`, `acquired_at`) so operators can
   inspect lock holders during incidents.
-- **Safeguards** – kill switch file, dry-run mode, deny/allow maintenance windows, and configurable retry/jitter for
-  transient failures.
+- **Safeguards** – kill switch file, dry-run mode, deny/allow maintenance windows, a configurable cooldown between
+  successful reboots, and retry/jitter controls for transient failures.
 - **Observability** – structured JSON logs on stderr plus optional Prometheus metrics served from a configurable listener.
 - **Packaging & release** – reproducible `.deb`/`.rpm` packages with SBOMs, checksums, and cosign signatures produced via
   the repository `Makefile` and GitHub Actions pipeline.

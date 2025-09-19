@@ -16,18 +16,19 @@ const DefaultConfigPath = "/etc/clusterrebootd/config.yaml"
 
 // Config represents the runtime configuration for the reboot coordinator daemon.
 type Config struct {
-	NodeName                string           `yaml:"node_name"`
-	RebootRequiredDetectors []DetectorConfig `yaml:"reboot_required_detectors"`
-	HealthScript            string           `yaml:"health_script"`
-	HealthTimeoutSec        int              `yaml:"health_timeout_sec"`
-	CheckIntervalSec        int              `yaml:"check_interval_sec"`
-	BackoffMinSec           int              `yaml:"backoff_min_sec"`
-	BackoffMaxSec           int              `yaml:"backoff_max_sec"`
-	LockKey                 string           `yaml:"lock_key"`
-	LockTTLSec              int              `yaml:"lock_ttl_sec"`
-	EtcdEndpoints           []string         `yaml:"etcd_endpoints"`
-	EtcdNamespace           string           `yaml:"etcd_namespace"`
-	EtcdTLS                 *EtcdTLSConfig   `yaml:"etcd_tls"`
+        NodeName                string           `yaml:"node_name"`
+        RebootRequiredDetectors []DetectorConfig `yaml:"reboot_required_detectors"`
+        HealthScript            string           `yaml:"health_script"`
+        HealthTimeoutSec        int              `yaml:"health_timeout_sec"`
+        CheckIntervalSec        int              `yaml:"check_interval_sec"`
+        BackoffMinSec           int              `yaml:"backoff_min_sec"`
+        BackoffMaxSec           int              `yaml:"backoff_max_sec"`
+        MinRebootIntervalSec    int              `yaml:"min_reboot_interval_sec"`
+        LockKey                 string           `yaml:"lock_key"`
+        LockTTLSec              int              `yaml:"lock_ttl_sec"`
+        EtcdEndpoints           []string         `yaml:"etcd_endpoints"`
+        EtcdNamespace           string           `yaml:"etcd_namespace"`
+        EtcdTLS                 *EtcdTLSConfig   `yaml:"etcd_tls"`
 	RebootCommand           []string         `yaml:"reboot_command"`
 	ClusterPolicies         ClusterPolicies  `yaml:"cluster_policies"`
 	Windows                 WindowsConfig    `yaml:"windows"`
@@ -147,17 +148,20 @@ func (c *Config) Validate() error {
 	if c.BackoffMinSec <= 0 {
 		problems = append(problems, "backoff_min_sec must be greater than zero")
 	}
-	if c.BackoffMaxSec <= 0 {
-		problems = append(problems, "backoff_max_sec must be greater than zero")
-	}
-	if c.BackoffMaxSec < c.BackoffMinSec {
-		problems = append(problems, "backoff_max_sec must be greater than or equal to backoff_min_sec")
-	}
-	if c.LockTTLSec <= 0 {
-		problems = append(problems, "lock_ttl_sec must be greater than zero")
-	}
-	if c.LockTTLSec <= c.HealthTimeoutSec {
-		problems = append(problems, "lock_ttl_sec must be greater than health_timeout_sec to avoid premature lease expiry")
+        if c.BackoffMaxSec <= 0 {
+                problems = append(problems, "backoff_max_sec must be greater than zero")
+        }
+        if c.BackoffMaxSec < c.BackoffMinSec {
+                problems = append(problems, "backoff_max_sec must be greater than or equal to backoff_min_sec")
+        }
+        if c.MinRebootIntervalSec < 0 {
+                problems = append(problems, "min_reboot_interval_sec must be non-negative")
+        }
+        if c.LockTTLSec <= 0 {
+                problems = append(problems, "lock_ttl_sec must be greater than zero")
+        }
+        if c.LockTTLSec <= c.HealthTimeoutSec {
+                problems = append(problems, "lock_ttl_sec must be greater than health_timeout_sec to avoid premature lease expiry")
 	}
 	if strings.TrimSpace(c.LockKey) == "" {
 		problems = append(problems, "lock_key is required")
@@ -195,10 +199,10 @@ func (c *Config) Validate() error {
 }
 
 func (c *Config) applyDefaults() {
-	if c.HealthTimeoutSec == 0 {
-		c.HealthTimeoutSec = 30
-	}
-	if c.CheckIntervalSec == 0 {
+        if c.HealthTimeoutSec == 0 {
+                c.HealthTimeoutSec = 30
+        }
+        if c.CheckIntervalSec == 0 {
 		c.CheckIntervalSec = 60
 	}
 	if c.BackoffMinSec == 0 {
@@ -339,10 +343,18 @@ func (c *Config) LockTTL() time.Duration {
 
 // BackoffBounds returns the configured exponential backoff window as durations.
 func (c *Config) BackoffBounds() (time.Duration, time.Duration) {
-	return time.Duration(c.BackoffMinSec) * time.Second, time.Duration(c.BackoffMaxSec) * time.Second
+        return time.Duration(c.BackoffMinSec) * time.Second, time.Duration(c.BackoffMaxSec) * time.Second
 }
 
 // CheckInterval returns how long the orchestrator waits between evaluation passes.
 func (c *Config) CheckInterval() time.Duration {
-	return time.Duration(c.CheckIntervalSec) * time.Second
+        return time.Duration(c.CheckIntervalSec) * time.Second
+}
+
+// RebootCooldownInterval returns the configured minimum spacing between successful reboots.
+func (c *Config) RebootCooldownInterval() time.Duration {
+        if c == nil {
+                return 0
+        }
+        return time.Duration(c.MinRebootIntervalSec) * time.Second
 }
