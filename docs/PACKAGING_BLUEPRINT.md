@@ -190,8 +190,8 @@ overrides:
     scripts:
       preinstall: ./packaging/scripts/deb/preinst
       postinstall: ./packaging/scripts/deb/postinst
-      prerm: ./packaging/scripts/deb/prerm
-      postrm: ./packaging/scripts/deb/postrm
+      preremove: ./packaging/scripts/deb/prerm
+      postremove: ./packaging/scripts/deb/postrm
   rpm:
     depends:
       - systemd

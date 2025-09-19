@@ -32,6 +32,9 @@
   systemd unit, tmpfiles entry, default config template, and Debian/RPM
   maintainer scripts described in the packaging blueprint, ready for build
   integration.
+- Packaging assets are now exercised by automated tests that verify the config
+  template's safe defaults, the systemd unit contract, maintainer script
+  safeguards, and the `nfpm` file layout so regressions are caught early.
 - A top-level `Makefile` now standardises local builds, cross-compilation for
   `amd64`/`arm64`, and wraps `nfpm` so developers can reproducibly stage
   binaries in `dist/` and generate `.deb`/`.rpm` packages without ad-hoc
