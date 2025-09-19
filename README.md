@@ -73,13 +73,13 @@ demonstrates how to wire the implemented features together:
 - Two reboot detectors: a Debian/Ubuntu marker file and the RHEL `needs-restarting`
   command with a guard for its reboot-required exit code.
 - Cluster guardrails: health script location and timeout, an operator-controlled
-  kill switch file, and cluster policy hints (minimum healthy nodes and
-  designated fallback nodes) that are exported to the health script environment
-  via `RC_CLUSTER_MIN_HEALTHY_FRACTION`, `RC_CLUSTER_MIN_HEALTHY_ABSOLUTE`,
-  `RC_CLUSTER_FORBID_IF_ONLY_FALLBACK_LEFT`, and
-  `RC_CLUSTER_FALLBACK_NODES`.  If reboot windows are configured they are
-  injected through `RC_WINDOWS_ALLOW` and `RC_WINDOWS_DENY` so scripts can
-  honour operator-defined maintenance schedules.
+  kill switch file, cluster policy hints (minimum healthy nodes and designated
+  fallback nodes), and maintenance windows.  Cron-like `windows.deny`
+  expressions short-circuit the orchestration loop before detector execution
+  while `windows.allow` restricts runs to explicitly approved slots.  The
+  configured windows are also exported to the health script environment via
+  `RC_WINDOWS_ALLOW` and `RC_WINDOWS_DENY` so scripts can remain consistent with
+  the daemon's enforcement.
 - Distributed coordination: three etcd endpoints, an explicit namespace,
   lock key, and optional mutual TLS credentials.
 - Observability: metrics listener enabled so the daemon injects
@@ -143,6 +143,27 @@ The CLI currently offers early validation and introspection helpers:
 Future milestones will extend the loop with structured logging, observability
 integrations, packaging assets, and the full CI/CD pipeline described in the
 PRD.
+
+### Exit Codes
+
+The CLI normalises exit codes so automation and operators can reason about the
+daemon's state without parsing logs:
+
+| Code | Meaning | Returned By |
+| ---- | ------- | ----------- |
+| 0    | Success. No reboot required, prerequisites satisfied, or configuration validated. | All commands on success, including `run --once` and `status` when they report `no_action`, `recheck_cleared`, or `ready`. |
+| 1    | Runtime failure. Setup or orchestration error prevented evaluation. | `run`, `run --once`, `status`, `simulate`. |
+| 2    | Invalid configuration. | `run`, `status`, `validate-config`. |
+| 3    | Blocked by the health script (pre- or post-lock). | `run --once`, `status`, and long-running `run` when terminated while health is blocking. |
+| 4    | Lock contention prevented progress. | `run --once`, `status`, and long-running `run` when terminated while unable to acquire the lock. |
+| 5    | Kill switch present. | `run --once`, `status`, and long-running `run` when terminated while the kill switch is active. |
+| 6    | Detector evaluation failed during simulation. | `simulate`. |
+| 64   | CLI usage error (unknown command or flag parsing failure). | All commands. |
+
+The long-running `run` mode applies the same mappings when it exits due to a
+signal: if the last observed outcome was blocked by health, lock contention, or
+the kill switch, the process returns that exit code so supervisors can reflect
+the blocking condition.
 
 ### Observability
 

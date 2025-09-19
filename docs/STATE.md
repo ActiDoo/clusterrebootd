@@ -16,6 +16,10 @@
   triggering a reboot.  Optional `--skip-health` and `--skip-lock` flags allow
   operators to bypass the health script or etcd lock when running offline
   diagnostics.
+- CLI exit codes now follow the PRD contract: health blocks return 3, lock
+  contention returns 4, kill switches return 5, and the long-running `run`
+  command propagates the last blocked outcome when it exits on a signal.
+  Documentation covering the exit-code behaviour was added for operators.
 - The orchestration loop now retries transient runtime failures with an
   exponential backoff and listens for SIGINT/SIGTERM so operators can stop the
   daemon cleanly when managed by service supervisors.
@@ -31,6 +35,12 @@
 - The health script base environment now includes cluster policy thresholds,
   fallback node lists, and configured maintenance windows so gating logic can
   enforce operator intent without re-reading the configuration file.
+- The orchestrator now enforces configured maintenance windows, short-circuiting
+  orchestration passes during deny periods and requiring explicit allow matches
+  when operators specify them.  The health script base environment still
+  includes cluster policy thresholds, fallback node lists, and window
+  definitions so custom checks observe the same schedule without re-reading the
+  configuration file.
 - A packaging blueprint (`docs/PACKAGING_BLUEPRINT.md`) documents the target
   systemd contract, filesystem layout, and `nfpm` packaging skeleton so
   implementation can proceed without revisiting foundational decisions.
