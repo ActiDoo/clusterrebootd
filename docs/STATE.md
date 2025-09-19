@@ -85,6 +85,9 @@
   signing.
 
 ## Next Up
+- Implement the SIGHUP-driven configuration reload path (FR-CF-2): design which
+  fields can be hot-reloaded, add runner/orchestrator hooks, document operator
+  expectations, and cover the behaviour with unit tests.
 - Measure CI run times with caching/static analysis enabled and tune job
   parallelism or cache key strategy before layering heavier integration tests.
 - Integrate the containerised smoke tests into CI so packaging regressions are
@@ -95,6 +98,8 @@
   signing keys are wired in.
 - Extend the smoke tests to exercise service enablement under systemd once a
   container harness that can launch `systemd` safely is available.
+- Implement the post-reboot marker described in FR-SD-3 so successful reboots
+  leave an auditable timestamp under `/run/reboot-coordinator`.
 
 ## Open Questions
 - Finalise the exact etcd keyspace layout and RBAC policy for the distributed lock.

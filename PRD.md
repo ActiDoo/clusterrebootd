@@ -173,19 +173,22 @@
 * **Build‑System**: Go ≥ 1.22 (statisch gelinkt), `nfpm` oder `fpm` für Paketbau.
 * **Dateilayout (FHS)**:
 
-  * Binär: `/usr/local/bin/reboot-coordinator`
-  * Config: `/etc/reboot-coordinator/config.yaml`
-  * Health: `/usr/local/bin/cluster-health-check.sh` (Beispiel)
-  * Systemd: `/etc/systemd/system/reboot-coordinator.service`
-  * Logs: Journal (keine eigenen Logfiles per Default)
+  * Binär: `/usr/bin/reboot-coordinator` (statisch gelinkt; entspricht dem `ExecStart` der systemd-Unit)
+  * Config: `/etc/reboot-coordinator/config.yaml` als kommentiertes Template (Conffile) plus reserviertes `/etc/reboot-coordinator/config.d/`
+  * Kill-Switch: `/etc/reboot-coordinator/disable` (wird nicht automatisch angelegt)
+  * Systemd: `/lib/systemd/system/reboot-coordinator.service` (bzw. `/usr/lib/systemd/system` auf rpm-basierten Distros)
+  * tmpfiles.d: `/usr/lib/tmpfiles.d/reboot-coordinator.conf` stellt `/run/reboot-coordinator` mit kontrollierten Rechten bereit
+  * Logging: Ausgabe ins Journal (keine eigenen Logfiles per Default)
+  * Dokumentation: README & Blueprint unter `/usr/share/doc/reboot-coordinator/`
 * **Dependencies**:
 
   * `systemd`
-  * für RHEL‑Detector: `dnf-utils`/`yum-utils` (liefert `needs-restarting`)
+  * Optional: `ca-certificates` (Empfehlung für TLS) sowie vorhandenes `dnf-utils`/`yum-utils` auf RHEL-Systemen für `needs-restarting`
 * **Maintainer‑Scripts**:
 
-  * `postinst`: create config dir, set perms, `systemctl daemon-reload && systemctl enable --now`
-  * `prerm`/`postrm`: `systemctl stop` (bei remove/purge), keine Datenlöschung ohne Bestätigung
+  * `preinst`/`preinstall`: legt Konfigurationsverzeichnisse an und bewahrt vorhandene Kill-Switch-Dateien
+  * `postinst`/`postinstall`: führt `systemd-tmpfiles --create`, ruft `systemctl daemon-reload` (falls verfügbar) auf und weist auf manuelles `systemctl enable --now` hin statt den Dienst automatisch zu starten
+  * `prerm`/`preremove` & `postrm`/`postremove`: stoppen den Dienst nur bei Remove, ignorieren Fehler und lassen Konfigurationsdateien bestehen
 * **Signierung**:
 
   * deb: `dpkg-sig`/`debsign`
