@@ -43,3 +43,80 @@ jobs:
         run: |
           set -euo pipefail
           go test ./...
+
+  package-artifacts:
+    name: Build packages and supply-chain artefacts
+    needs: format-and-test
+    runs-on: ubuntu-22.04
+    timeout-minutes: 25
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8
+
+      - name: Set up Go
+        uses: actions/setup-go@44694675825211faa026b3c33043df3e48a5fa00
+        with:
+          go-version: '1.23.x'
+
+      - name: Install packaging toolchain
+        run: |
+          set -euo pipefail
+          mkdir -p "${HOME}/bin"
+          echo "${HOME}/bin" >> "${GITHUB_PATH}"
+
+          NFPM_VERSION=2.37.0
+          NFPM_TARBALL="nfpm_${NFPM_VERSION}_Linux_x86_64.tar.gz"
+          curl -sSL "https://github.com/goreleaser/nfpm/releases/download/v${NFPM_VERSION}/${NFPM_TARBALL}" -o "${NFPM_TARBALL}"
+          curl -sSL "https://github.com/goreleaser/nfpm/releases/download/v${NFPM_VERSION}/checksums.txt" -o nfpm_checksums.txt
+          grep "  ${NFPM_TARBALL}$" nfpm_checksums.txt > nfpm_checksums_filtered.txt
+          sha256sum --check nfpm_checksums_filtered.txt
+          tar -xf "${NFPM_TARBALL}"
+          install -m 0755 nfpm "${HOME}/bin/nfpm"
+
+          SYFT_VERSION=1.14.0
+          SYFT_TARBALL="syft_${SYFT_VERSION}_linux_amd64.tar.gz"
+          curl -sSL "https://github.com/anchore/syft/releases/download/v${SYFT_VERSION}/${SYFT_TARBALL}" -o "${SYFT_TARBALL}"
+          curl -sSL "https://github.com/anchore/syft/releases/download/v${SYFT_VERSION}/syft_${SYFT_VERSION}_checksums.txt" -o syft_checksums.txt
+          grep "  ${SYFT_TARBALL}$" syft_checksums.txt > syft_checksums_filtered.txt
+          sha256sum --check syft_checksums_filtered.txt
+          tar -xf "${SYFT_TARBALL}"
+          install -m 0755 syft "${HOME}/bin/syft"
+
+          COSIGN_VERSION=2.2.4
+          COSIGN_BIN="cosign-linux-amd64"
+          curl -sSL "https://github.com/sigstore/cosign/releases/download/v${COSIGN_VERSION}/cosign_checksums.txt" -o cosign_checksums.txt
+          curl -sSL "https://github.com/sigstore/cosign/releases/download/v${COSIGN_VERSION}/${COSIGN_BIN}" -o "${COSIGN_BIN}"
+          grep "  ${COSIGN_BIN}$" cosign_checksums.txt > cosign_checksums_filtered.txt
+          sha256sum --check cosign_checksums_filtered.txt
+          install -m 0755 "${COSIGN_BIN}" "${HOME}/bin/cosign"
+
+      - name: Generate signing key pair
+        env:
+          COSIGN_PASSWORD: testing-password
+          COSIGN_YES: "true"
+        run: |
+          set -euo pipefail
+          cosign generate-key-pair --output-key-prefix ci.cosign
+
+      - name: Build packages with SBOMs and signatures
+        env:
+          COSIGN_PASSWORD: testing-password
+          COSIGN_YES: "true"
+        run: |
+          set -euo pipefail
+          make clean
+          make package SIGNING_KEY=ci.cosign.key SIGNING_PUBKEY=ci.cosign.pub
+
+      - name: Verify built artefacts
+        env:
+          COSIGN_PUBLIC_KEY: ci.cosign.pub
+        run: |
+          set -euo pipefail
+          packaging/scripts/verify_artifacts.sh dist/packages
+
+      - name: Upload packaging artefacts
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: reboot-coordinator-${{ github.run_id }}-packages
+          path: dist/packages
