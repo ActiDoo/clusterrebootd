@@ -341,6 +341,8 @@ lock_ttl_sec: 120
 		Endpoints: cluster.Endpoints,
 		LockKey:   "/cluster/reboot-coordinator/lock",
 		TTL:       120 * time.Second,
+		NodeName:  "test-node",
+		ProcessID: 1337,
 	})
 	if err != nil {
 		t.Fatalf("failed to create lock manager: %v", err)

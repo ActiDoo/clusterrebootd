@@ -160,6 +160,21 @@ metrics:
   listen: 0.0.0.0:9090
 ```
 
+#### Etcd lock metadata
+
+When the coordinator acquires the distributed mutex it overwrites the lock key
+with a JSON object describing the holder.  Operators can inspect the key via
+`etcdctl` or the API to confirm which node is currently rebooting and when it
+claimed the lease:
+
+```json
+{"node":"node-a","pid":1234,"acquired_at":"2024-03-07T11:45:12.123Z"}
+```
+
+`node` reflects the configured `node_name`, `pid` is the coordinator process
+ID, and `acquired_at` is the RFC3339 timestamp recorded when the lock was
+obtained.
+
 When enabled, the daemon starts an HTTP listener on the configured address and
 serves Prometheus-compatible counters and histograms under `/metrics`.  The
 environment of the health script receives `RC_METRICS_ENDPOINT` so checks can
