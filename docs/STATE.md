@@ -16,6 +16,10 @@
   triggering a reboot.  Optional `--skip-health` and `--skip-lock` flags allow
   operators to bypass the health script or etcd lock when running offline
   diagnostics.
+- CLI exit codes now follow the PRD contract: health blocks return 3, lock
+  contention returns 4, kill switches return 5, and the long-running `run`
+  command propagates the last blocked outcome when it exits on a signal.
+  Documentation covering the exit-code behaviour was added for operators.
 - The orchestration loop now retries transient runtime failures with an
   exponential backoff and listens for SIGINT/SIGTERM so operators can stop the
   daemon cleanly when managed by service supervisors.

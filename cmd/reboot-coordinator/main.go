@@ -27,11 +27,14 @@ import (
 )
 
 const (
-	exitOK            = 0
-	exitUsage         = 64
-	exitConfigError   = 65
-	exitDetectorError = 67
-	exitRunError      = 68
+	exitOK              = 0
+	exitUsage           = 64
+	exitRunError        = 1
+	exitConfigError     = 2
+	exitHealthBlocked   = 3
+	exitLockUnavailable = 4
+	exitKillSwitch      = 5
+	exitDetectorError   = 6
 )
 
 func main() {
@@ -207,7 +210,7 @@ func commandRunWithWriters(args []string, stdout, stderr io.Writer) int {
 		if !outcome.DryRun && outcome.Status == orchestrator.OutcomeReady {
 			fmt.Fprintln(stdout, "ready outcome reached; run without --once to execute the reboot command")
 		}
-		return exitOK
+		return exitCodeForOutcome(outcome)
 	}
 
 	tracker := &trackingExecutor{delegate: orchestrator.NewExecCommandExecutor(nil, nil)}
@@ -233,6 +236,9 @@ func commandRunWithWriters(args []string, stdout, stderr io.Writer) int {
 	if err := loop.Run(ctx); err != nil {
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 			fmt.Fprintln(stdout, "shutdown requested; orchestration loop exiting")
+			if code := exitCodeForOutcome(lastOutcome); code != exitOK {
+				return code
+			}
 			return exitOK
 		}
 		fmt.Fprintf(stderr, "orchestration loop error: %v\n", err)
@@ -247,7 +253,7 @@ func commandRunWithWriters(args []string, stdout, stderr io.Writer) int {
 		}
 	}
 
-	return exitOK
+	return exitCodeForOutcome(lastOutcome)
 }
 
 func commandStatus(args []string) int {
@@ -365,7 +371,7 @@ func commandStatusWithWriters(args []string, stdout, stderr io.Writer) int {
 	reportOutcome(stdout, outcome)
 	fmt.Fprintln(stdout)
 
-	return exitOK
+	return exitCodeForOutcome(outcome)
 }
 
 func buildBaseEnvironment(cfg *config.Config) map[string]string {
@@ -535,6 +541,19 @@ func reportOutcome(stdout io.Writer, outcome orchestrator.Outcome) {
 	}
 	if outcome.DryRun {
 		fmt.Fprintln(stdout, "dry-run enabled: reboot command not executed")
+	}
+}
+
+func exitCodeForOutcome(out orchestrator.Outcome) int {
+	switch out.Status {
+	case orchestrator.OutcomeKillSwitch:
+		return exitKillSwitch
+	case orchestrator.OutcomeHealthBlocked:
+		return exitHealthBlocked
+	case orchestrator.OutcomeLockUnavailable:
+		return exitLockUnavailable
+	default:
+		return exitOK
 	}
 }
 
