@@ -20,9 +20,9 @@
   contention returns 4, kill switches return 5, and the long-running `run`
   command propagates the last blocked outcome when it exits on a signal.
   Documentation covering the exit-code behaviour was added for operators.
-- The orchestration loop now retries transient runtime failures with an
-  exponential backoff and listens for SIGINT/SIGTERM so operators can stop the
-  daemon cleanly when managed by service supervisors.
+- The orchestration loop now retries transient runtime failures with a
+  jittered exponential backoff and listens for SIGINT/SIGTERM so operators can
+  stop the daemon cleanly when managed by service supervisors.
 - A reproducible dev container (Go 1.22 with etcd 3.6.4 and nfpm 2.43.1) is
   available for local development, packaging experiments, and integration
   testing.

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math/rand"
 	"time"
 
 	"github.com/clusterrebootd/clusterrebootd/pkg/config"
@@ -26,6 +27,7 @@ type Loop struct {
 	errorBackoff  time.Duration
 	errorMinDelay time.Duration
 	errorMaxDelay time.Duration
+	rnd           *rand.Rand
 }
 
 // LoopOption customises loop behaviour.
@@ -64,6 +66,15 @@ func WithLoopErrorBackoff(min, max time.Duration) LoopOption {
 	return func(l *Loop) {
 		l.errorMinDelay = min
 		l.errorMaxDelay = max
+	}
+}
+
+// WithLoopRandSource overrides the random source used for jittering error backoff delays.
+func WithLoopRandSource(src rand.Source) LoopOption {
+	return func(l *Loop) {
+		if src != nil {
+			l.rnd = rand.New(src)
+		}
 	}
 }
 
@@ -110,6 +121,9 @@ func NewLoop(cfg *config.Config, runner SinglePassRunner, executor CommandExecut
 	}
 	if loop.errorMaxDelay < loop.errorMinDelay {
 		loop.errorMaxDelay = loop.errorMinDelay
+	}
+	if loop.rnd == nil {
+		loop.rnd = rand.New(rand.NewSource(time.Now().UnixNano()))
 	}
 
 	return loop, nil
@@ -177,7 +191,18 @@ func (l *Loop) nextErrorDelay() time.Duration {
 	if l.errorBackoff > l.errorMaxDelay {
 		l.errorBackoff = l.errorMaxDelay
 	}
-	return l.errorBackoff
+	if l.errorBackoff <= l.errorMinDelay {
+		return l.errorBackoff
+	}
+	jitterRange := l.errorBackoff - l.errorMinDelay
+	if jitterRange <= 0 {
+		return l.errorBackoff
+	}
+	if l.rnd == nil {
+		l.rnd = rand.New(rand.NewSource(time.Now().UnixNano()))
+	}
+	jitter := time.Duration(l.rnd.Int63n(int64(jitterRange) + 1))
+	return l.errorMinDelay + jitter
 }
 
 func (l *Loop) resetErrorBackoff() {
