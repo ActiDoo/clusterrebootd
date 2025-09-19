@@ -25,6 +25,17 @@ packaging               # nfpm packaging config, systemd unit, and maintainer sc
 Additional directories such as `deploy/`, `scripts/`, and packaging assets will
 be introduced as the orchestrator matures.
 
+## Documentation
+
+- [Architecture Overview](docs/ARCHITECTURE.md) explains the daemon's component
+  model and roadmap.
+- The new [Operations Guide](docs/OPERATIONS.md) describes installation,
+  configuration workflows, health script practices, and troubleshooting for
+  production rollouts.
+- [Packaging Blueprint](docs/PACKAGING_BLUEPRINT.md) and
+  [CI Pipeline Blueprint](docs/CI_PIPELINE.md) capture the packaging and
+  automation contracts that releases adhere to.
+
 ## Getting Started
 
 1. Ensure Go 1.23 or newer is installed.
@@ -258,6 +269,10 @@ environment of the health script receives `RC_METRICS_ENDPOINT` so checks can
 optionally validate that scraping works as expected.
 
 ## Operational Guidance
+
+Operators looking for end-to-end deployment and maintenance steps should follow
+the [Operations Guide](docs/OPERATIONS.md), which expands on the highlights
+below with detailed runbooks and troubleshooting advice.
 
 - `reboot-coordinator run` listens for `SIGINT` and `SIGTERM` and exits
   gracefully, which allows service managers such as systemd to stop the daemon
