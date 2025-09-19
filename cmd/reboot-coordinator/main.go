@@ -131,6 +131,8 @@ func commandRunWithWriters(args []string, stdout, stderr io.Writer) int {
 		Namespace:   cfg.EtcdNamespace,
 		TTL:         cfg.LockTTL(),
 		TLS:         tlsConfig,
+		NodeName:    cfg.NodeName,
+		ProcessID:   os.Getpid(),
 	})
 	if err != nil {
 		fmt.Fprintf(stderr, "failed to initialise lock manager: %v\n", err)
@@ -334,6 +336,8 @@ func commandStatusWithWriters(args []string, stdout, stderr io.Writer) int {
 			Namespace:   cfgCopy.EtcdNamespace,
 			TTL:         cfgCopy.LockTTL(),
 			TLS:         tlsConfig,
+			NodeName:    cfgCopy.NodeName,
+			ProcessID:   os.Getpid(),
 		})
 		if mgrErr != nil {
 			fmt.Fprintf(stderr, "failed to initialise lock manager: %v\n", mgrErr)

@@ -29,6 +29,12 @@
 - CLI run mode now wires the reporter into a JSON logger on stderr and an
   optional Prometheus metrics listener, exporting the address to the health
   script environment for runtime validation.
+- The etcd-backed lock manager now writes JSON metadata (node name, PID, and
+  acquisition timestamp) to the mutex key so operators can identify the
+  current holder during incident response.
+- The health script base environment now includes cluster policy thresholds,
+  fallback node lists, and configured maintenance windows so gating logic can
+  enforce operator intent without re-reading the configuration file.
 - The orchestrator now enforces configured maintenance windows, short-circuiting
   orchestration passes during deny periods and requiring explicit allow matches
   when operators specify them.  The health script base environment still
