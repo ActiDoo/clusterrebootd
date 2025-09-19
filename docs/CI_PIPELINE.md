@@ -120,3 +120,51 @@ artefacts for human review via the workflow summary.
   available.
 - Integrate integration tests against the dev-container etcd instance to cover
   lock acquisition and health gate behaviour.
+
+## Stage 3 – GitLab Release Automation
+
+Release publication now lives in a dedicated GitLab pipeline (`.gitlab-ci.yml`)
+that runs whenever a semantic version tag is pushed.  The workflow reuses the
+format/test and packaging steps outlined above before promoting the artefacts to
+an official GitLab Release with machine-generated notes.
+
+### Trigger & Flow
+
+- `workflow` rules restrict the pipeline to tagged commits so day-to-day pushes
+  do not burn runner minutes on release automation.
+- `format-and-test` mirrors the GitHub Actions gate (`gofmt`, `go vet`,
+  `staticcheck`, `go test ./...`) to ensure the tagged commit is healthy before
+  artefacts are built.
+- `package-artifacts` rebuilds the Debian/RPM packages, SBOMs, checksums, and
+  cosign signatures using pinned versions of `nfpm` (`v2.37.0`), `syft`
+  (`v1.14.0`), and `cosign` (`v2.2.4`).  The job verifies upstream checksums,
+  signs artefacts with an ephemeral key, validates them with
+  `packaging/scripts/verify_artifacts.sh`, and publishes `dist/packages/` as a
+  pipeline artefact.
+- `release` retrieves the packaged artefacts, computes release notes by diffing
+  against the previous tag with `git describe`, uploads every file under
+  `dist/packages/` via the GitLab uploads API, and either creates or updates the
+  GitLab Release for the current tag.
+
+### Changelog & Asset Handling
+
+- The release job renders `release_notes.md` containing a "Changes since
+  <previous tag>" section (or the full history for the inaugural release) plus a
+  link back to the originating pipeline for provenance.
+- Asset uploads are tagged as `package` links for `.deb`/`.rpm` files and
+  `other` for SBOMs, checksums, signatures, and the cosign public key so GitLab
+  surfaces them appropriately on the release page.
+- Releases use the GitLab v4 API directly to avoid relying on mutable third
+  party tooling.  The pipeline expects a project/group variable named
+  `GITLAB_RELEASE_TOKEN` with `api` scope credentials; missing credentials cause
+  the job to fail fast.
+
+### Security, Stability, and Resilience
+
+- `GIT_DEPTH: 0` ensures the runner has sufficient history to compute changelog
+  diffs accurately even when tags diverge from `main`.
+- All network downloads (packaging toolchain and asset uploads) enable
+  `curl --fail` so transient HTTP issues surface immediately instead of
+  producing partial artefacts.
+- The release script is idempotent: reruns detect an existing release and issue
+  an update (`PUT`) rather than failing when the tag already exists.

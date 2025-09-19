@@ -1,0 +1,189 @@
+workflow:
+  rules:
+    - if: $CI_COMMIT_TAG
+    - when: never
+
+stages:
+  - test
+  - package
+  - release
+
+default:
+  image: golang:1.23
+  cache:
+    key: ${CI_COMMIT_REF_SLUG}
+    paths:
+      - go/pkg/mod
+      - .cache/go-build
+  variables:
+    GIT_DEPTH: "0"
+    GOFLAGS: -mod=readonly
+
+format-and-test:
+  stage: test
+  script:
+    - set -euo pipefail
+    - export PATH="${PATH}:$(go env GOPATH)/bin"
+    - GOFLAGS= go install honnef.co/go/tools/cmd/staticcheck@v0.6.1
+    - |
+      GO_FILES=$(git ls-files '*.go')
+      if [ -z "${GO_FILES}" ]; then
+        echo "No Go files tracked; skipping gofmt check."
+      else
+        UNFORMATTED=$(gofmt -l ${GO_FILES})
+        if [ -n "${UNFORMATTED}" ]; then
+          echo "The following files require gofmt:" >&2
+          echo "${UNFORMATTED}" >&2
+          exit 1
+        fi
+      fi
+    - go vet ./...
+    - staticcheck ./...
+    - go test ./...
+
+package-artifacts:
+  stage: package
+  needs:
+    - format-and-test
+  variables:
+    COSIGN_PASSWORD: testing-password
+    COSIGN_YES: "true"
+  script:
+    - set -euo pipefail
+    - export PATH="${PATH}:$(go env GOPATH)/bin"
+    - |
+      apt-get update
+      apt-get install -y --no-install-recommends ca-certificates curl
+      rm -rf /var/lib/apt/lists/*
+    - mkdir -p "${HOME}/bin"
+    - export PATH="${HOME}/bin:${PATH}"
+    - |
+      NFPM_VERSION=2.37.0
+      NFPM_TARBALL="nfpm_${NFPM_VERSION}_Linux_x86_64.tar.gz"
+      curl -sSL "https://github.com/goreleaser/nfpm/releases/download/v${NFPM_VERSION}/${NFPM_TARBALL}" -o "${NFPM_TARBALL}"
+      curl -sSL "https://github.com/goreleaser/nfpm/releases/download/v${NFPM_VERSION}/checksums.txt" -o nfpm_checksums.txt
+      grep "  ${NFPM_TARBALL}$" nfpm_checksums.txt > nfpm_checksums_filtered.txt
+      sha256sum --check nfpm_checksums_filtered.txt
+      tar -xf "${NFPM_TARBALL}"
+      install -m 0755 nfpm "${HOME}/bin/nfpm"
+    - |
+      SYFT_VERSION=1.14.0
+      SYFT_TARBALL="syft_${SYFT_VERSION}_linux_amd64.tar.gz"
+      curl -sSL "https://github.com/anchore/syft/releases/download/v${SYFT_VERSION}/${SYFT_TARBALL}" -o "${SYFT_TARBALL}"
+      curl -sSL "https://github.com/anchore/syft/releases/download/v${SYFT_VERSION}/syft_${SYFT_VERSION}_checksums.txt" -o syft_checksums.txt
+      grep "  ${SYFT_TARBALL}$" syft_checksums.txt > syft_checksums_filtered.txt
+      sha256sum --check syft_checksums_filtered.txt
+      tar -xf "${SYFT_TARBALL}"
+      install -m 0755 syft "${HOME}/bin/syft"
+    - |
+      COSIGN_VERSION=2.2.4
+      COSIGN_BIN="cosign-linux-amd64"
+      curl -sSL "https://github.com/sigstore/cosign/releases/download/v${COSIGN_VERSION}/cosign_checksums.txt" -o cosign_checksums.txt
+      curl -sSL "https://github.com/sigstore/cosign/releases/download/v${COSIGN_VERSION}/${COSIGN_BIN}" -o "${COSIGN_BIN}"
+      grep "  ${COSIGN_BIN}$" cosign_checksums.txt > cosign_checksums_filtered.txt
+      sha256sum --check cosign_checksums_filtered.txt
+      install -m 0755 "${COSIGN_BIN}" "${HOME}/bin/cosign"
+    - cosign generate-key-pair --output-key-prefix ci.cosign
+    - make clean
+    - make package SIGNING_KEY=ci.cosign.key SIGNING_PUBKEY=ci.cosign.pub
+    - COSIGN_PUBLIC_KEY=ci.cosign.pub packaging/scripts/verify_artifacts.sh dist/packages
+    - rm -f ci.cosign.key ci.cosign.pub
+  artifacts:
+    paths:
+      - dist/packages
+    expire_in: 7 days
+
+release:
+  stage: release
+  image: debian:12-slim
+  needs:
+    - job: package-artifacts
+      artifacts: true
+  variables:
+    GIT_STRATEGY: fetch
+  before_script:
+    - set -euo pipefail
+    - |
+      apt-get update
+      apt-get install -y --no-install-recommends ca-certificates curl git jq tar
+      rm -rf /var/lib/apt/lists/*
+  script:
+    - |
+      if [ -z "${CI_COMMIT_TAG:-}" ]; then
+        echo "Release job must run on a tagged commit." >&2
+        exit 1
+      fi
+      if [ -z "${GITLAB_RELEASE_TOKEN:-}" ]; then
+        echo "GITLAB_RELEASE_TOKEN is required to publish releases." >&2
+        exit 1
+      fi
+    - git fetch --tags origin
+    - |
+      previous_tag=""
+      if git describe --tags --abbrev=0 "${CI_COMMIT_TAG}^" >/dev/null 2>&1; then
+        previous_tag=$(git describe --tags --abbrev=0 "${CI_COMMIT_TAG}^")
+      fi
+      release_notes=release_notes.md
+      {
+        echo "# Cluster Reboot Coordinator ${CI_COMMIT_TAG}";
+        echo;
+        if [ -n "${previous_tag}" ]; then
+          echo "## Changes since ${previous_tag}";
+          git log --pretty=format:'- %s (%h)' "${previous_tag}..${CI_COMMIT_TAG}";
+        else
+          echo "## Changes";
+          git log --pretty=format:'- %s (%h)' "${CI_COMMIT_TAG}";
+        fi;
+        echo;
+        echo "Generated from pipeline ${CI_PIPELINE_URL}.";
+      } > "${release_notes}"
+    - |
+      assets_links='[]'
+      while IFS= read -r file; do
+        [ -f "${file}" ] || continue
+        relative_path=${file#dist/packages/}
+        name=${relative_path}
+        case "${file}" in
+          *.deb|*.rpm)
+            link_type="package"
+            ;;
+          *)
+            link_type="other"
+            ;;
+        esac
+        response=$(curl --silent --show-error --fail \
+          --header "PRIVATE-TOKEN: ${GITLAB_RELEASE_TOKEN}" \
+          --form "file=@${file}" \
+          "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/uploads")
+        upload_path=$(echo "${response}" | jq -r '.url')
+        if [ -z "${upload_path}" ] || [ "${upload_path}" = "null" ]; then
+          echo "Failed to parse upload response for ${file}" >&2
+          exit 1
+        fi
+        full_url="${CI_PROJECT_URL}${upload_path}"
+        assets_links=$(echo "${assets_links}" | jq --arg name "${name}" --arg url "${full_url}" --arg type "${link_type}" '. + [{name: $name, url: $url, link_type: $type}]')
+      done < <(find dist/packages -type f | sort)
+      echo "Attached $(echo "${assets_links}" | jq 'length') assets to release payload."
+      echo "${assets_links}" > release_assets.json
+    - |
+      description=$(cat release_notes.md)
+      payload=$(jq -n \
+        --arg name "Cluster Reboot Coordinator ${CI_COMMIT_TAG}" \
+        --arg tag "${CI_COMMIT_TAG}" \
+        --arg desc "${description}" \
+        --slurpfile assets release_assets.json \
+        '{ name: $name, tag_name: $tag, description: $desc, assets: { links: $assets[0] } }')
+      release_endpoint="${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/releases/${CI_COMMIT_TAG}"
+      if curl --silent --show-error --fail --header "PRIVATE-TOKEN: ${GITLAB_RELEASE_TOKEN}" "${release_endpoint}" >/dev/null 2>&1; then
+        method=PUT
+      else
+        method=POST
+        release_endpoint="${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/releases"
+      fi
+      curl --silent --show-error --fail \
+        --request "${method}" \
+        --header "PRIVATE-TOKEN: ${GITLAB_RELEASE_TOKEN}" \
+        --header 'Content-Type: application/json' \
+        --data "${payload}" \
+        "${release_endpoint}"
+      echo "Published GitLab release for ${CI_COMMIT_TAG}."

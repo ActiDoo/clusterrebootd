@@ -69,6 +69,10 @@
   `staticcheck`, and `go test ./...`, then build `.deb`/`.rpm` artefacts with
   SBOMs, checksums, and cosign signatures on every push/pull request,
   uploading the `dist/packages/` directory for review.
+- GitLab releases are now automated via `.gitlab-ci.yml`: tag pipelines rerun the
+  formatting/tests, rebuild the packages with SBOMs/checksums/signatures, generate
+  changelog notes from the previous tag, and publish the entire `dist/packages/`
+  tree as release assets using API-backed credentials.
 
 ## Next Up
 - Measure CI run times with caching/static analysis enabled and tune job
