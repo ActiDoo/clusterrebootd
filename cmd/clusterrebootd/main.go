@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -209,12 +210,11 @@ func commandRunWithWriters(args []string, stdout, stderr io.Writer) int {
 	reporter := orchestrator.NewStructuredReporter(cfg.NodeName, jsonLogger, metricsCollector)
 
 	runnerOptions := []orchestrator.Option{orchestrator.WithReporter(reporter)}
-  runnerOptions = append(runnerOptions, orchestrator.WithCommandEnvironment(baseEnv))
+	runnerOptions = append(runnerOptions, orchestrator.WithCommandEnvironment(baseEnv))
 	if cooldownManager != nil {
 		runnerOptions = append(runnerOptions, orchestrator.WithCooldownManager(cooldownManager))
 	}
 	runner, err := orchestrator.NewRunner(cfg, engine, healthRunner, locker, runnerOptions...)
-  
 	if err != nil {
 		fmt.Fprintf(stderr, "failed to initialise orchestrator: %v\n", err)
 		return exitRunError
