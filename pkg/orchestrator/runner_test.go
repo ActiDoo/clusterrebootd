@@ -4,11 +4,13 @@ import (
 	"context"
 	"errors"
 	"math/rand"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/clusterrebootd/clusterrebootd/pkg/config"
+	"github.com/clusterrebootd/clusterrebootd/pkg/cooldown"
 	"github.com/clusterrebootd/clusterrebootd/pkg/detector"
 	"github.com/clusterrebootd/clusterrebootd/pkg/health"
 	"github.com/clusterrebootd/clusterrebootd/pkg/lock"
@@ -123,6 +125,37 @@ func (f *fakeLocker) Acquire(ctx context.Context) (lock.Lease, error) {
 	f.pointer++
 	return outcome.lease, outcome.err
 }
+
+type fakeCooldown struct {
+	mu        sync.Mutex
+	status    cooldown.Status
+	statusErr error
+	startErr  error
+	calls     int
+	lastDur   time.Duration
+	clearErr  error
+	clears    int
+}
+
+func (f *fakeCooldown) Status(ctx context.Context) (cooldown.Status, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.status, f.statusErr
+}
+
+func (f *fakeCooldown) Start(ctx context.Context, duration time.Duration) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if duration == 0 {
+		f.clears++
+		return f.clearErr
+	}
+	f.calls++
+	f.lastDur = duration
+	return f.startErr
+}
+
+func (f *fakeCooldown) Close() error { return nil }
 
 func baseConfig() *config.Config {
 	minFrac := 0.5
@@ -364,8 +397,14 @@ func TestRunnerWithinAllowWindow(t *testing.T) {
 	if outcome.Status != OutcomeReady {
 		t.Fatalf("expected OutcomeReady, got %s", outcome.Status)
 	}
+	if lease.released {
+		t.Fatal("expected lease to remain held until explicitly released")
+	}
+	if err := outcome.ReleaseLock(context.Background()); err != nil {
+		t.Fatalf("release lock: %v", err)
+	}
 	if !lease.released {
-		t.Fatal("expected lease to be released")
+		t.Fatal("expected lease to be released after ReleaseLock")
 	}
 }
 
@@ -671,5 +710,91 @@ func TestRunnerEmitsObservabilitySignals(t *testing.T) {
 	}
 	if !outcomeMetricFound {
 		t.Fatalf("expected orchestration_outcomes_total metric among %d metrics", len(metrics))
+	}
+}
+
+func TestRunnerCooldownBlocksReboot(t *testing.T) {
+	cfg := baseConfig()
+	cfg.MinRebootIntervalSec = 300
+
+	engine := &fakeEngine{steps: []evalStep{{requires: true, results: []detector.Result{{Name: "stub", RequiresReboot: true}}}}}
+	healthRunner := &fakeHealth{steps: []healthStep{{result: health.Result{ExitCode: 0}}}}
+	locker := &fakeLocker{}
+	cool := &fakeCooldown{status: cooldown.Status{Active: true, Node: "node-b", Remaining: 90 * time.Second}}
+
+	runner, err := NewRunner(cfg, engine, healthRunner, locker, WithCooldownManager(cool))
+	if err != nil {
+		t.Fatalf("failed to create runner: %v", err)
+	}
+
+	outcome, err := runner.RunOnce(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if outcome.Status != OutcomeCooldownActive {
+		t.Fatalf("expected cooldown outcome, got %s", outcome.Status)
+	}
+	if !strings.Contains(outcome.Message, "cooldown") {
+		t.Fatalf("expected cooldown message, got %q", outcome.Message)
+	}
+	if locker.calls != 0 {
+		t.Fatalf("expected lock not to be acquired, got %d attempts", locker.calls)
+	}
+}
+
+func TestRunnerReadyConfiguresCooldownHandlers(t *testing.T) {
+	cfg := baseConfig()
+	cfg.MinRebootIntervalSec = 120
+
+	engine := &fakeEngine{steps: []evalStep{{requires: true, results: []detector.Result{{Name: "stub", RequiresReboot: true}}}, {requires: true, results: []detector.Result{{Name: "stub", RequiresReboot: true}}}}}
+	healthRunner := &fakeHealth{steps: []healthStep{{result: health.Result{ExitCode: 0}}, {result: health.Result{ExitCode: 0}}}}
+	lease := &fakeLease{}
+	locker := &fakeLocker{outcomes: []acquireOutcome{{lease: lease}}}
+	cool := &fakeCooldown{}
+
+	runner, err := NewRunner(cfg, engine, healthRunner, locker, WithCooldownManager(cool))
+	if err != nil {
+		t.Fatalf("failed to create runner: %v", err)
+	}
+
+	outcome, err := runner.RunOnce(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if outcome.Status != OutcomeReady {
+		t.Fatalf("expected ready outcome, got %s", outcome.Status)
+	}
+	if outcome.cooldownStart == nil {
+		t.Fatal("expected cooldownStart to be configured")
+	}
+	if outcome.cooldownClear == nil {
+		t.Fatal("expected cooldownClear to be configured")
+	}
+
+	if err := outcome.startCooldown(context.Background()); err != nil {
+		t.Fatalf("failed to start cooldown: %v", err)
+	}
+	if !outcome.cooldownStarted {
+		t.Fatal("expected cooldownStarted flag to be true")
+	}
+	cool.mu.Lock()
+	calls := cool.calls
+	duration := cool.lastDur
+	cool.mu.Unlock()
+	if calls != 1 {
+		t.Fatalf("expected cooldown Start to be called once, got %d", calls)
+	}
+	if duration != cfg.RebootCooldownInterval() {
+		t.Fatalf("expected cooldown duration %s, got %s", cfg.RebootCooldownInterval(), duration)
+	}
+
+	if err := outcome.clearCooldown(context.Background()); err != nil {
+		t.Fatalf("failed to clear cooldown: %v", err)
+	}
+	cool.mu.Lock()
+	clears := cool.clears
+	cool.mu.Unlock()
+	if clears != 1 {
+		t.Fatalf("expected cooldown clear to be invoked once, got %d", clears)
 	}
 }

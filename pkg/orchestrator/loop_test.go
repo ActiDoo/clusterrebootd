@@ -102,6 +102,121 @@ func TestLoopStopsOnDryRunReady(t *testing.T) {
 	}
 }
 
+func TestLoopReleasesLockWhenCommandFails(t *testing.T) {
+	cfg := baseConfig()
+	releaseCalled := false
+	runner := &fakeLoopRunner{steps: []loopStep{{outcome: Outcome{
+		Status:      OutcomeReady,
+		Command:     cfg.RebootCommand,
+		lockRelease: func(context.Context) error { releaseCalled = true; return nil },
+	}}}}
+	executor := &fakeExecutor{err: errors.New("boom")}
+
+	loop, err := NewLoop(cfg, runner, executor, WithLoopInterval(0), WithLoopSleepFunc(func(time.Duration) {}))
+	if err != nil {
+		t.Fatalf("failed to create loop: %v", err)
+	}
+
+	if err := loop.Run(context.Background()); err == nil {
+		t.Fatal("expected loop to return error when executor fails")
+	}
+	if !releaseCalled {
+		t.Fatal("expected lock release to be invoked on executor failure")
+	}
+}
+
+func TestLoopStartsCooldownBeforeExecuting(t *testing.T) {
+	cfg := baseConfig()
+	cfg.DryRun = false
+	startCalls := 0
+	ready := Outcome{
+		Status:  OutcomeReady,
+		Command: cfg.RebootCommand,
+		cooldownStart: func(context.Context) error {
+			startCalls++
+			return nil
+		},
+	}
+	runner := &fakeLoopRunner{steps: []loopStep{{outcome: ready}}}
+	executor := &fakeExecutor{}
+
+	loop, err := NewLoop(cfg, runner, executor, WithLoopInterval(0), WithLoopSleepFunc(func(time.Duration) {}))
+	if err != nil {
+		t.Fatalf("failed to create loop: %v", err)
+	}
+
+	if err := loop.Run(context.Background()); err != nil {
+		t.Fatalf("unexpected loop error: %v", err)
+	}
+	if startCalls != 1 {
+		t.Fatalf("expected cooldown start to be invoked once, got %d", startCalls)
+	}
+	executor.mu.Lock()
+	calls := len(executor.commands)
+	executor.mu.Unlock()
+	if calls != 1 {
+		t.Fatalf("expected executor to run once, got %d", calls)
+	}
+}
+
+func TestLoopClearsCooldownWhenExecutorFails(t *testing.T) {
+	cfg := baseConfig()
+	startCalls := 0
+	clearCalls := 0
+	ready := Outcome{
+		Status:  OutcomeReady,
+		Command: cfg.RebootCommand,
+		cooldownStart: func(context.Context) error {
+			startCalls++
+			return nil
+		},
+		cooldownClear: func(context.Context) error {
+			clearCalls++
+			return nil
+		},
+	}
+	runner := &fakeLoopRunner{steps: []loopStep{{outcome: ready}}}
+	executor := &fakeExecutor{err: errors.New("boom")}
+
+	loop, err := NewLoop(cfg, runner, executor, WithLoopInterval(0), WithLoopSleepFunc(func(time.Duration) {}))
+	if err != nil {
+		t.Fatalf("failed to create loop: %v", err)
+	}
+
+	if err := loop.Run(context.Background()); err == nil {
+		t.Fatal("expected loop to return error when executor fails")
+	}
+	if startCalls != 1 {
+		t.Fatalf("expected cooldown start to be invoked once, got %d", startCalls)
+	}
+	if clearCalls != 1 {
+		t.Fatalf("expected cooldown clear to run on failure, got %d", clearCalls)
+	}
+}
+
+func TestLoopLeavesLockHeldOnSuccessfulCommand(t *testing.T) {
+	cfg := baseConfig()
+	releaseCalled := false
+	runner := &fakeLoopRunner{steps: []loopStep{{outcome: Outcome{
+		Status:      OutcomeReady,
+		Command:     cfg.RebootCommand,
+		lockRelease: func(context.Context) error { releaseCalled = true; return nil },
+	}}}}
+	executor := &fakeExecutor{}
+
+	loop, err := NewLoop(cfg, runner, executor, WithLoopInterval(0), WithLoopSleepFunc(func(time.Duration) {}))
+	if err != nil {
+		t.Fatalf("failed to create loop: %v", err)
+	}
+
+	if err := loop.Run(context.Background()); err != nil {
+		t.Fatalf("unexpected loop error: %v", err)
+	}
+	if releaseCalled {
+		t.Fatal("expected lock release to be deferred after successful command")
+	}
+}
+
 func TestLoopRespectsContextCancellation(t *testing.T) {
 	cfg := baseConfig()
 	runner := &fakeLoopRunner{steps: []loopStep{{outcome: Outcome{Status: OutcomeNoAction}}}}

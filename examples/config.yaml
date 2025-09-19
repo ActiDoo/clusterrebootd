@@ -24,6 +24,8 @@ health_timeout_sec: 45
 check_interval_sec: 300
 backoff_min_sec: 5
 backoff_max_sec: 60
+# Ensure at least 15 minutes between successful reboots across the cluster.
+min_reboot_interval_sec: 900
 
 # Global kill switch that operators can create to block reboots quickly.
 kill_switch_file: /etc/clusterrebootd/disable

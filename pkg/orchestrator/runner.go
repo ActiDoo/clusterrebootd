@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/clusterrebootd/clusterrebootd/pkg/config"
+	"github.com/clusterrebootd/clusterrebootd/pkg/cooldown"
 	"github.com/clusterrebootd/clusterrebootd/pkg/detector"
 	"github.com/clusterrebootd/clusterrebootd/pkg/health"
 	"github.com/clusterrebootd/clusterrebootd/pkg/lock"
@@ -40,6 +41,7 @@ const (
 	OutcomeLockUnavailable OutcomeStatus = "lock_unavailable"
 	OutcomeLockSkipped     OutcomeStatus = "lock_skipped"
 	OutcomeRecheckCleared  OutcomeStatus = "recheck_cleared"
+	OutcomeCooldownActive  OutcomeStatus = "cooldown_active"
 	OutcomeReady           OutcomeStatus = "ready"
 )
 
@@ -54,6 +56,49 @@ type Outcome struct {
 	PreLockHealthResult     *health.Result
 	PostLockHealthResult    *health.Result
 	Command                 []string
+	lockRelease             func(context.Context) error
+	cooldownStart           func(context.Context) error
+	cooldownClear           func(context.Context) error
+	cooldownStarted         bool
+}
+
+// ReleaseLock releases the distributed lock associated with this outcome.
+//
+// It is primarily used by callers that evaluate a single pass (`run --once`
+// or diagnostics tooling) to ensure the mutex is released when no reboot will
+// be triggered.  Outcomes returned from the long-running loop will keep the
+// lock held until the reboot command executes or an error occurs, so callers
+// should only invoke this method when they explicitly want to give up the
+// lease.
+func (o *Outcome) ReleaseLock(ctx context.Context) error {
+	if o == nil || o.lockRelease == nil {
+		return nil
+	}
+	releaseFn := o.lockRelease
+	o.lockRelease = nil
+	return releaseFn(ctx)
+}
+
+func (o *Outcome) startCooldown(ctx context.Context) error {
+	if o == nil || o.cooldownStart == nil {
+		return nil
+	}
+	startFn := o.cooldownStart
+	o.cooldownStart = nil
+	if err := startFn(ctx); err != nil {
+		return err
+	}
+	o.cooldownStarted = true
+	return nil
+}
+
+func (o *Outcome) clearCooldown(ctx context.Context) error {
+	if o == nil || o.cooldownClear == nil {
+		return nil
+	}
+	clearFn := o.cooldownClear
+	o.cooldownClear = nil
+	return clearFn(ctx)
 }
 
 // Runner executes the reboot orchestration logic once.
@@ -62,6 +107,7 @@ type Runner struct {
 	detectors      DetectorEvaluator
 	health         HealthRunner
 	locker         lock.Manager
+	cooldown       cooldown.Manager
 	windows        windows.Evaluator
 	killSwitchPath string
 	checkKill      func(string) (bool, error)
@@ -72,6 +118,7 @@ type Runner struct {
 	lockEnabled    bool
 	lockSkipReason string
 	now            func() time.Time
+	cooldownWindow time.Duration
 }
 
 // Option configures a Runner.
@@ -113,6 +160,13 @@ func WithReporter(rep Reporter) Option {
 		if rep != nil {
 			r.reporter = rep
 		}
+	}
+}
+
+// WithCooldownManager wires a cooldown coordinator into the runner.
+func WithCooldownManager(manager cooldown.Manager) Option {
+	return func(r *Runner) {
+		r.cooldown = manager
 	}
 }
 
@@ -166,6 +220,7 @@ func NewRunner(cfg *config.Config, detectors DetectorEvaluator, healthRunner Hea
 		maxLockTries:   5,
 		reporter:       NoopReporter{},
 		lockEnabled:    true,
+		cooldownWindow: cfg.RebootCooldownInterval(),
 	}
 
 	for _, opt := range opts {
@@ -189,6 +244,9 @@ func NewRunner(cfg *config.Config, detectors DetectorEvaluator, healthRunner Hea
 	}
 	if runner.now == nil {
 		runner.now = time.Now
+	}
+	if runner.cooldownWindow > 0 && runner.cooldown == nil {
+		return nil, errors.New("cooldown interval configured but no cooldown manager provided")
 	}
 
 	windowsEval, err := windows.NewEvaluator(cfg.Windows.Allow, cfg.Windows.Deny)
@@ -260,6 +318,37 @@ func (r *Runner) RunOnce(ctx context.Context) (out Outcome, err error) {
 		return out, nil
 	}
 
+	if r.cooldownWindow > 0 && r.cooldown != nil {
+		status, cdErr := r.cooldown.Status(ctx)
+		r.recordCooldownStatus(ctx, "pre-lock", status, cdErr)
+		if cdErr != nil {
+			return out, fmt.Errorf("check reboot cooldown: %w", cdErr)
+		}
+		if status.Active {
+			out.Status = OutcomeCooldownActive
+			remaining := status.Remaining
+			if remaining <= 0 && !status.ExpiresAt.IsZero() {
+				remaining = time.Until(status.ExpiresAt)
+			}
+			if remaining < 0 {
+				remaining = 0
+			}
+			details := []string{}
+			if remaining > 0 {
+				details = append(details, fmt.Sprintf("remaining %s", formatDuration(remaining)))
+			}
+			if status.Node != "" {
+				details = append(details, fmt.Sprintf("started by %s", status.Node))
+			}
+			if len(details) > 0 {
+				out.Message = fmt.Sprintf("reboot cooldown active (%s)", strings.Join(details, ", "))
+			} else {
+				out.Message = "reboot cooldown active"
+			}
+			return out, nil
+		}
+	}
+
 	if !r.lockEnabled {
 		out.Status = OutcomeLockSkipped
 		msg := r.lockSkipReason
@@ -285,7 +374,14 @@ func (r *Runner) RunOnce(ctx context.Context) (out Outcome, err error) {
 	}
 	out.LockAcquired = true
 
-	defer r.releaseLease(lease, &err)
+	defer func() {
+		if lease != nil {
+			releaseErr := r.releaseLease(context.Background(), lease)
+			if err == nil && releaseErr != nil {
+				err = releaseErr
+			}
+		}
+	}()
 
 	killActive, checkErr = r.checkKill(r.killSwitchPath)
 	r.recordKillSwitch(ctx, "post-lock", killActive, checkErr)
@@ -324,6 +420,46 @@ func (r *Runner) RunOnce(ctx context.Context) (out Outcome, err error) {
 	out.Message = "reboot prerequisites satisfied"
 	out.DryRun = r.cfg.DryRun
 	out.Command = append([]string(nil), r.cfg.RebootCommand...)
+
+	if !out.DryRun && len(out.Command) > 0 {
+		leaseRef := lease
+		out.lockRelease = func(ctx context.Context) error {
+			if ctx == nil {
+				ctx = context.Background()
+			}
+			return r.releaseLease(ctx, leaseRef)
+		}
+		lease = nil
+
+		if r.cooldown != nil && r.cooldownWindow > 0 {
+			interval := r.cooldownWindow
+			out.cooldownStart = func(ctx context.Context) error {
+				if ctx == nil {
+					ctx = context.Background()
+				}
+				err := r.cooldown.Start(ctx, interval)
+				r.recordCooldownActivation(ctx, interval, err)
+				if err != nil {
+					if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+						return err
+					}
+					return fmt.Errorf("start reboot cooldown: %w", err)
+				}
+				return nil
+			}
+			out.cooldownClear = func(ctx context.Context) error {
+				if ctx == nil {
+					ctx = context.Background()
+				}
+				err := r.cooldown.Start(ctx, 0)
+				r.recordCooldownClear(ctx, err)
+				if err != nil && !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
+					return fmt.Errorf("clear reboot cooldown: %w", err)
+				}
+				return err
+			}
+		}
+	}
 
 	return out, nil
 }
@@ -450,6 +586,110 @@ func (r *Runner) runHealthWithObservability(ctx context.Context, phase string, l
 	res, err := r.health.Run(ctx, env)
 	r.recordHealth(ctx, phase, time.Since(start), res, err)
 	return res, err
+}
+
+func (r *Runner) recordCooldownStatus(ctx context.Context, phase string, status cooldown.Status, statusErr error) {
+	if r.reporter == nil {
+		return
+	}
+	result := "inactive"
+	level := observability.LevelInfo
+	fields := map[string]interface{}{
+		"phase":  phase,
+		"active": status.Active,
+	}
+	if statusErr != nil {
+		result = "error"
+		level = observability.LevelError
+		fields["error"] = statusErr.Error()
+	} else if status.Active {
+		result = "active"
+		level = observability.LevelWarn
+		if status.Node != "" {
+			fields["node"] = status.Node
+		}
+		if !status.StartedAt.IsZero() {
+			fields["started_at"] = status.StartedAt.UTC().Format(time.RFC3339Nano)
+		}
+		if status.Remaining > 0 {
+			fields["remaining_ms"] = status.Remaining.Milliseconds()
+		}
+	}
+
+	r.reporter.RecordMetric(observability.Metric{
+		Name:        "cooldown_checks_total",
+		Type:        observability.MetricCounter,
+		Value:       1,
+		Labels:      map[string]string{"phase": phase, "result": result},
+		Description: "Number of reboot cooldown inspections grouped by phase and result.",
+	})
+
+	r.reporter.RecordEvent(ctx, observability.Event{
+		Level:  level,
+		Node:   r.cfg.NodeName,
+		Event:  "cooldown_status",
+		Fields: fields,
+	})
+}
+
+func (r *Runner) recordCooldownActivation(ctx context.Context, duration time.Duration, activationErr error) {
+	if r.reporter == nil {
+		return
+	}
+	result := "success"
+	level := observability.LevelInfo
+	fields := map[string]interface{}{
+		"duration_ms": duration.Milliseconds(),
+	}
+	if activationErr != nil {
+		result = "error"
+		level = observability.LevelError
+		fields["error"] = activationErr.Error()
+	}
+
+	r.reporter.RecordMetric(observability.Metric{
+		Name:        "cooldown_activations_total",
+		Type:        observability.MetricCounter,
+		Value:       1,
+		Labels:      map[string]string{"result": result},
+		Description: "Number of reboot cooldown activations grouped by result.",
+	})
+
+	r.reporter.RecordEvent(ctx, observability.Event{
+		Level:  level,
+		Node:   r.cfg.NodeName,
+		Event:  "cooldown_started",
+		Fields: fields,
+	})
+}
+
+func (r *Runner) recordCooldownClear(ctx context.Context, clearErr error) {
+	if r.reporter == nil {
+		return
+	}
+	result := "success"
+	level := observability.LevelInfo
+	fields := map[string]interface{}{}
+	if clearErr != nil {
+		result = "error"
+		level = observability.LevelError
+		fields["error"] = clearErr.Error()
+	}
+
+	r.reporter.RecordMetric(observability.Metric{
+		Name:        "cooldown_clears_total",
+		Type:        observability.MetricCounter,
+		Value:       1,
+		Labels:      map[string]string{"result": result},
+		Description: "Number of reboot cooldown clear attempts grouped by result.",
+	})
+
+	r.reporter.RecordEvent(ctx, observability.Event{
+		Level:  level,
+		Node:   r.cfg.NodeName,
+		Event:  "cooldown_cleared",
+		Fields: fields,
+	})
 }
 
 func (r *Runner) recordWindowDecision(ctx context.Context, decision windows.Decision) {
@@ -707,11 +947,14 @@ func (r *Runner) recordLockFailure(ctx context.Context, attempts int) {
 	})
 }
 
-func (r *Runner) releaseLease(lease lock.Lease, errPtr *error) {
+func (r *Runner) releaseLease(ctx context.Context, lease lock.Lease) error {
 	if lease == nil {
-		return
+		return nil
 	}
-	releaseCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	releaseCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
 	defer cancel()
 
 	start := time.Now()
@@ -741,9 +984,14 @@ func (r *Runner) releaseLease(lease lock.Lease, errPtr *error) {
 		Fields: map[string]interface{}{"result": result, "duration_ms": duration.Milliseconds()},
 	})
 
-	if releaseErr != nil && errPtr != nil && *errPtr == nil {
-		*errPtr = fmt.Errorf("release lock: %w", releaseErr)
+	if releaseErr != nil {
+		if errors.Is(releaseErr, context.Canceled) || errors.Is(releaseErr, context.DeadlineExceeded) {
+			return releaseErr
+		}
+		return fmt.Errorf("release lock: %w", releaseErr)
 	}
+
+	return nil
 }
 
 func (r *Runner) recordOutcome(ctx context.Context, out Outcome) {
@@ -753,7 +1001,7 @@ func (r *Runner) recordOutcome(ctx context.Context, out Outcome) {
 
 	level := observability.LevelInfo
 	switch out.Status {
-	case OutcomeKillSwitch, OutcomeHealthBlocked, OutcomeWindowDenied, OutcomeWindowOutside, OutcomeLockUnavailable, OutcomeLockSkipped:
+	case OutcomeKillSwitch, OutcomeHealthBlocked, OutcomeWindowDenied, OutcomeWindowOutside, OutcomeLockUnavailable, OutcomeLockSkipped, OutcomeCooldownActive:
 		level = observability.LevelWarn
 	}
 
@@ -783,4 +1031,22 @@ func (r *Runner) recordOutcome(ctx context.Context, out Outcome) {
 		Event:  "run_outcome",
 		Fields: fields,
 	})
+}
+
+func formatDuration(d time.Duration) string {
+	if d <= 0 {
+		return "0s"
+	}
+	if d >= time.Minute {
+		minutes := d / time.Minute
+		seconds := (d % time.Minute) / time.Second
+		if seconds == 0 {
+			return fmt.Sprintf("%dm", minutes)
+		}
+		return fmt.Sprintf("%dm%ds", minutes, seconds)
+	}
+	if d >= time.Second {
+		return fmt.Sprintf("%ds", int(d/time.Second))
+	}
+	return d.String()
 }

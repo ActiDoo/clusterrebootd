@@ -144,6 +144,9 @@ func (l *Loop) Run(ctx context.Context) error {
 
 		outcome, err := l.runner.RunOnce(ctx)
 		if err != nil {
+			if releaseErr := outcome.ReleaseLock(context.Background()); releaseErr != nil {
+				err = errors.Join(err, releaseErr)
+			}
 			if l.errorHandler != nil {
 				l.errorHandler(err)
 			}
@@ -162,12 +165,39 @@ func (l *Loop) Run(ctx context.Context) error {
 
 		if outcome.Status == OutcomeReady {
 			if outcome.DryRun || len(outcome.Command) == 0 {
+				if releaseErr := outcome.ReleaseLock(context.Background()); releaseErr != nil {
+					return releaseErr
+				}
 				return nil
 			}
+			if err := outcome.startCooldown(ctx); err != nil {
+				releaseErr := outcome.ReleaseLock(context.Background())
+				if releaseErr != nil {
+					return errors.Join(err, releaseErr)
+				}
+				return err
+			}
 			if err := l.executor.Execute(ctx, outcome.Command); err != nil {
-				return fmt.Errorf("execute reboot command: %w", err)
+				clearErr := error(nil)
+				if outcome.cooldownStarted {
+					clearErr = outcome.clearCooldown(context.Background())
+				}
+				releaseErr := outcome.ReleaseLock(context.Background())
+				execErr := fmt.Errorf("execute reboot command: %w", err)
+				finalErr := execErr
+				if clearErr != nil {
+					finalErr = errors.Join(finalErr, clearErr)
+				}
+				if releaseErr != nil {
+					finalErr = errors.Join(finalErr, releaseErr)
+				}
+				return finalErr
 			}
 			return nil
+		}
+
+		if releaseErr := outcome.ReleaseLock(context.Background()); releaseErr != nil {
+			return releaseErr
 		}
 
 		if err := l.sleepWithContext(ctx, l.interval); err != nil {

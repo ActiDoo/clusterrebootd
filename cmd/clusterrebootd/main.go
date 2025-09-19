@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/clusterrebootd/clusterrebootd/pkg/config"
+	"github.com/clusterrebootd/clusterrebootd/pkg/cooldown"
 	"github.com/clusterrebootd/clusterrebootd/pkg/detector"
 	"github.com/clusterrebootd/clusterrebootd/pkg/health"
 	"github.com/clusterrebootd/clusterrebootd/pkg/lock"
@@ -140,6 +141,24 @@ func commandRunWithWriters(args []string, stdout, stderr io.Writer) int {
 	}
 	defer locker.Close()
 
+	var cooldownManager *cooldown.EtcdManager
+	if cfg.MinRebootIntervalSec > 0 {
+		cdMgr, cdErr := cooldown.NewEtcdManager(cooldown.EtcdManagerOptions{
+			Endpoints:   cfg.EtcdEndpoints,
+			DialTimeout: 5 * time.Second,
+			Namespace:   cfg.EtcdNamespace,
+			Key:         "reboot_cooldown",
+			TLS:         tlsConfig,
+			NodeName:    cfg.NodeName,
+		})
+		if cdErr != nil {
+			fmt.Fprintf(stderr, "failed to initialise cooldown manager: %v\n", cdErr)
+			return exitRunError
+		}
+		cooldownManager = cdMgr
+		defer cooldownManager.Close()
+	}
+
 	jsonLogger := observability.NewJSONLogger(stderr)
 	metricsCollector := observability.MetricsCollector(observability.NoopMetricsCollector{})
 	var (
@@ -190,7 +209,11 @@ func commandRunWithWriters(args []string, stdout, stderr io.Writer) int {
 
 	reporter := orchestrator.NewStructuredReporter(cfg.NodeName, jsonLogger, metricsCollector)
 
-	runner, err := orchestrator.NewRunner(cfg, engine, healthRunner, locker, orchestrator.WithReporter(reporter))
+	runnerOptions := []orchestrator.Option{orchestrator.WithReporter(reporter)}
+	if cooldownManager != nil {
+		runnerOptions = append(runnerOptions, orchestrator.WithCooldownManager(cooldownManager))
+	}
+	runner, err := orchestrator.NewRunner(cfg, engine, healthRunner, locker, runnerOptions...)
 	if err != nil {
 		fmt.Fprintf(stderr, "failed to initialise orchestrator: %v\n", err)
 		return exitRunError
@@ -209,6 +232,10 @@ func commandRunWithWriters(args []string, stdout, stderr io.Writer) int {
 			return exitRunError
 		}
 		reportOutcome(stdout, outcome)
+		if releaseErr := outcome.ReleaseLock(context.Background()); releaseErr != nil {
+			fmt.Fprintf(stderr, "failed to release lock: %v\n", releaseErr)
+			return exitRunError
+		}
 		if !outcome.DryRun && outcome.Status == orchestrator.OutcomeReady {
 			fmt.Fprintln(stdout, "ready outcome reached; run without --once to execute the reboot command")
 		}
@@ -252,6 +279,13 @@ func commandRunWithWriters(args []string, stdout, stderr io.Writer) int {
 			fmt.Fprintln(stdout, "reboot command invoked; system reboot should be in progress")
 		} else {
 			fmt.Fprintln(stdout, "ready outcome reached but reboot command was not executed")
+		}
+	}
+
+	if !tracker.executed {
+		if releaseErr := lastOutcome.ReleaseLock(context.Background()); releaseErr != nil {
+			fmt.Fprintf(stderr, "failed to release lock: %v\n", releaseErr)
+			return exitRunError
 		}
 	}
 
@@ -314,6 +348,12 @@ func commandStatusWithWriters(args []string, stdout, stderr io.Writer) int {
 		healthRunner = scriptRunner
 	}
 
+	tlsConfig, tlsErr := buildEtcdTLSConfig(cfgCopy.EtcdTLS)
+	if tlsErr != nil {
+		fmt.Fprintf(stderr, "failed to configure etcd TLS: %v\n", tlsErr)
+		return exitConfigError
+	}
+
 	var (
 		locker      lock.Manager
 		etcdManager *lock.EtcdManager
@@ -322,12 +362,6 @@ func commandStatusWithWriters(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "skipping lock acquisition (--skip-lock)")
 		locker = lock.NewNoopManager()
 	} else {
-		tlsConfig, tlsErr := buildEtcdTLSConfig(cfgCopy.EtcdTLS)
-		if tlsErr != nil {
-			fmt.Fprintf(stderr, "failed to configure etcd TLS: %v\n", tlsErr)
-			return exitConfigError
-		}
-
 		var mgrErr error
 		etcdManager, mgrErr = lock.NewEtcdManager(lock.EtcdManagerOptions{
 			Endpoints:   cfgCopy.EtcdEndpoints,
@@ -345,13 +379,35 @@ func commandStatusWithWriters(args []string, stdout, stderr io.Writer) int {
 		}
 		locker = etcdManager
 	}
+	var cooldownManager *cooldown.EtcdManager
+	if cfgCopy.MinRebootIntervalSec > 0 {
+		cdMgr, cdErr := cooldown.NewEtcdManager(cooldown.EtcdManagerOptions{
+			Endpoints:   cfgCopy.EtcdEndpoints,
+			DialTimeout: 5 * time.Second,
+			Namespace:   cfgCopy.EtcdNamespace,
+			Key:         "reboot_cooldown",
+			TLS:         tlsConfig,
+			NodeName:    cfgCopy.NodeName,
+		})
+		if cdErr != nil {
+			fmt.Fprintf(stderr, "failed to initialise cooldown manager: %v\n", cdErr)
+			return exitRunError
+		}
+		cooldownManager = cdMgr
+	}
 	if etcdManager != nil {
 		defer etcdManager.Close()
+	}
+	if cooldownManager != nil {
+		defer cooldownManager.Close()
 	}
 
 	runnerOptions := []orchestrator.Option{orchestrator.WithMaxLockAttempts(1)}
 	if *skipLock {
 		runnerOptions = append(runnerOptions, orchestrator.WithLockAcquisition(false, "lock acquisition skipped (--skip-lock)"))
+	}
+	if cooldownManager != nil {
+		runnerOptions = append(runnerOptions, orchestrator.WithCooldownManager(cooldownManager))
 	}
 
 	runner, err := orchestrator.NewRunner(&cfgCopy, engine, healthRunner, locker, runnerOptions...)
@@ -373,6 +429,10 @@ func commandStatusWithWriters(args []string, stdout, stderr io.Writer) int {
 	}
 
 	reportOutcome(stdout, outcome)
+	if releaseErr := outcome.ReleaseLock(context.Background()); releaseErr != nil {
+		fmt.Fprintf(stderr, "failed to release lock: %v\n", releaseErr)
+		return exitRunError
+	}
 	fmt.Fprintln(stdout)
 
 	return exitCodeForOutcome(outcome)
@@ -401,6 +461,9 @@ func buildBaseEnvironment(cfg *config.Config) map[string]string {
 	env["RC_CLUSTER_FORBID_IF_ONLY_FALLBACK_LEFT"] = strconv.FormatBool(cfg.ClusterPolicies.ForbidIfOnlyFallbackLeft)
 	if len(cfg.ClusterPolicies.FallbackNodes) > 0 {
 		env["RC_CLUSTER_FALLBACK_NODES"] = strings.Join(cfg.ClusterPolicies.FallbackNodes, ",")
+	}
+	if cfg.MinRebootIntervalSec > 0 {
+		env["RC_MIN_REBOOT_INTERVAL_SEC"] = strconv.Itoa(cfg.MinRebootIntervalSec)
 	}
 	if len(cfg.Windows.Allow) > 0 {
 		env["RC_WINDOWS_ALLOW"] = strings.Join(cfg.Windows.Allow, ",")

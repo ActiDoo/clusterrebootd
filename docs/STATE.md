@@ -32,6 +32,13 @@
 - The etcd-backed lock manager now writes JSON metadata (node name, PID, and
   acquisition timestamp) to the mutex key so operators can identify the
   current holder during incident response.
+- The orchestrator keeps the etcd lease held until the reboot command is
+  invoked, preventing concurrent node reboots while exposing an explicit lock
+  release hook for diagnostic and dry-run workflows.
+- Reboot orchestration enforces an operator-defined cooldown between
+  successful reboots by persisting a short-lived marker in etcd; nodes skip
+  new reboot attempts until the interval expires so clusters cannot drain too
+  quickly.【F:pkg/orchestrator/runner.go†L311-L376】【F:cmd/clusterrebootd/main.go†L233-L272】
 - The health script base environment now includes cluster policy thresholds,
   fallback node lists, and configured maintenance windows so gating logic can
   enforce operator intent without re-reading the configuration file.
