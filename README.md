@@ -52,7 +52,8 @@ The repository ships with a `Makefile` that standardises common developer tasks:
 Set `ARCHES=amd64` (or `arm64`) to restrict the architectures, override
 `VERSION` to package a specific release string, or point `NFPM` to an alternate
 `nfpm` binary when developing inside containers.  Ensure `nfpm` is available in
-the `PATH` before invoking the packaging target.
+the `PATH` before invoking the packaging target; the provided dev container
+ships with version 2.43.1 pre-installed.
 
 Generated artefacts live under `dist/` and are ignored by git so developers can
 cleanly iterate on builds and packages without polluting commits.
@@ -83,8 +84,10 @@ the configuration is accepted before rolling it out.
 
 The repository ships with a [VS Code Dev Container](https://containers.dev/)
 definition under `.devcontainer/`.  It builds on the official Go 1.22 base
-image, upgrades the underlying packages, and installs etcd v3.6.4 so integration
-tests can run against a recent upstream release without additional manual setup.
+image, upgrades the underlying packages, installs etcd v3.6.4, and layers in
+[`nfpm`](https://nfpm.goreleaser.com/) 2.43.1 so integration tests and packaging
+workflows can run against recent upstream releases without additional manual
+setup.
 
 To use it, open the folder in VS Code and select **Reopen in Container**, or run
 `devcontainer up` from the CLI.  After the container starts you can launch etcd
