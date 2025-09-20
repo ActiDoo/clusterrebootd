@@ -178,20 +178,14 @@ func (l *Loop) Run(ctx context.Context) error {
 				return err
 			}
 			if err := l.executor.Execute(ctx, outcome.Command); err != nil {
-				clearErr := error(nil)
-				if outcome.cooldownStarted {
-					clearErr = outcome.clearCooldown(context.Background())
-				}
-				releaseErr := outcome.ReleaseLock(context.Background())
+				// Keep the cooldown marker active so other nodes continue to back off; the reboot
+				// command may still be in progress even though it reported an error.
 				execErr := fmt.Errorf("execute reboot command: %w", err)
-				finalErr := execErr
-				if clearErr != nil {
-					finalErr = errors.Join(finalErr, clearErr)
-				}
+				releaseErr := outcome.ReleaseLock(context.Background())
 				if releaseErr != nil {
-					finalErr = errors.Join(finalErr, releaseErr)
+					return errors.Join(execErr, releaseErr)
 				}
-				return finalErr
+				return execErr
 			}
 			return nil
 		}

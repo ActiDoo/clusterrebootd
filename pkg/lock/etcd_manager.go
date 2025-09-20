@@ -127,6 +127,8 @@ func (m *EtcdManager) Acquire(ctx context.Context) (Lease, error) {
 		ctx = context.Background()
 	}
 
+	linearizableCtx := clientv3.WithRequireLeader(ctx)
+
 	session, err := concurrency.NewSession(m.client, concurrency.WithTTL(m.ttlSeconds))
 	if err != nil {
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
@@ -136,7 +138,7 @@ func (m *EtcdManager) Acquire(ctx context.Context) (Lease, error) {
 	}
 
 	mutex := concurrency.NewMutex(session, m.key)
-	if err := mutex.TryLock(ctx); err != nil {
+	if err := mutex.TryLock(linearizableCtx); err != nil {
 		_ = session.Close()
 		if errors.Is(err, concurrency.ErrLocked) {
 			return nil, ErrNotAcquired
@@ -147,8 +149,9 @@ func (m *EtcdManager) Acquire(ctx context.Context) (Lease, error) {
 		return nil, fmt.Errorf("try lock: %w", err)
 	}
 
-	if err := m.annotateLease(ctx, session, mutex); err != nil {
-		cleanupCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	if err := m.annotateLease(linearizableCtx, session, mutex); err != nil {
+		cleanupBase := clientv3.WithRequireLeader(context.Background())
+		cleanupCtx, cancel := context.WithTimeout(cleanupBase, 5*time.Second)
 		_ = mutex.Unlock(cleanupCtx)
 		cancel()
 		_ = session.Close()
@@ -172,6 +175,8 @@ func (l *etcdLease) Release(ctx context.Context) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
+
+	ctx = clientv3.WithRequireLeader(ctx)
 
 	unlockErr := l.mutex.Unlock(ctx)
 	closeErr := l.session.Close()
