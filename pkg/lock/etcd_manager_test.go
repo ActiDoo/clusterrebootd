@@ -174,7 +174,8 @@ func TestEtcdManagerAnnotatesLease(t *testing.T) {
 	}
 
 	key := internal.mutex.Key()
-	resp, err := etcdClient.Get(context.Background(), key)
+	ctx := clientv3.WithRequireLeader(context.Background())
+	resp, err := etcdClient.Get(ctx, key)
 	if err != nil {
 		t.Fatalf("failed to read metadata: %v", err)
 	}
@@ -206,7 +207,7 @@ func TestEtcdManagerAnnotatesLease(t *testing.T) {
 		t.Fatalf("failed to release lock: %v", err)
 	}
 
-	resp, err = etcdClient.Get(context.Background(), key)
+	resp, err = etcdClient.Get(ctx, key)
 	if err != nil {
 		t.Fatalf("failed to read metadata after release: %v", err)
 	}

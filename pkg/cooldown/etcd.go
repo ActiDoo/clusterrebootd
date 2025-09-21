@@ -94,7 +94,9 @@ func (m *EtcdManager) Status(ctx context.Context) (Status, error) {
 		ctx = context.Background()
 	}
 
-	resp, err := m.client.Get(ctx, m.key)
+	linearizableCtx := clientv3.WithRequireLeader(ctx)
+
+	resp, err := m.client.Get(linearizableCtx, m.key)
 	if err != nil {
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 			return Status{}, err
@@ -122,7 +124,8 @@ func (m *EtcdManager) Status(ctx context.Context) (Status, error) {
 		status.ExpiresAt = startedAt.Add(time.Duration(record.DurationSec) * time.Second)
 	}
 	if kv.Lease != 0 {
-		ttlResp, ttlErr := m.client.TimeToLive(ctx, clientv3.LeaseID(kv.Lease))
+		ttlCtx := clientv3.WithRequireLeader(ctx)
+		ttlResp, ttlErr := m.client.TimeToLive(ttlCtx, clientv3.LeaseID(kv.Lease))
 		if ttlErr != nil {
 			if errors.Is(ttlErr, context.Canceled) || errors.Is(ttlErr, context.DeadlineExceeded) {
 				return Status{}, ttlErr

@@ -3,12 +3,14 @@ package orchestrator
 import (
 	"context"
 	"errors"
+	"fmt"
 	"math/rand"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/clusterrebootd/clusterrebootd/internal/testutil"
 	"github.com/clusterrebootd/clusterrebootd/pkg/config"
 	"github.com/clusterrebootd/clusterrebootd/pkg/cooldown"
 	"github.com/clusterrebootd/clusterrebootd/pkg/detector"
@@ -156,6 +158,169 @@ func (f *fakeCooldown) Start(ctx context.Context, duration time.Duration) error 
 }
 
 func (f *fakeCooldown) Close() error { return nil }
+
+type executorEntry struct {
+	release func(context.Context) error
+	allow   chan struct{}
+}
+
+type trackingExecutor struct {
+	mu          sync.Mutex
+	entries     map[string]*executorEntry
+	activeNode  string
+	started     chan string
+	completed   chan string
+	invocations []string
+}
+
+func newTrackingExecutor(expected int) *trackingExecutor {
+	if expected <= 0 {
+		expected = 1
+	}
+	return &trackingExecutor{
+		entries:   make(map[string]*executorEntry, expected),
+		started:   make(chan string, expected),
+		completed: make(chan string, expected),
+	}
+}
+
+func (e *trackingExecutor) Execute(ctx context.Context, command []string) error {
+	if len(command) == 0 {
+		return errors.New("reboot command is empty")
+	}
+	node := command[len(command)-1]
+
+	e.mu.Lock()
+	if e.activeNode != "" {
+		active := e.activeNode
+		e.mu.Unlock()
+		return fmt.Errorf("command already running for %s while starting %s", active, node)
+	}
+	entry := e.ensureEntryLocked(node)
+	allowCh := entry.allow
+	e.activeNode = node
+	e.invocations = append(e.invocations, node)
+	e.mu.Unlock()
+
+	defer e.finish(node)
+
+	if err := e.signalStart(ctx, node); err != nil {
+		return err
+	}
+	if err := e.waitForAllowance(ctx, allowCh); err != nil {
+		return err
+	}
+
+	e.mu.Lock()
+	release := entry.release
+	e.mu.Unlock()
+	if release != nil {
+		if err := release(context.Background()); err != nil {
+			return err
+		}
+	}
+
+	select {
+	case e.completed <- node:
+	default:
+	}
+
+	return nil
+}
+
+func (e *trackingExecutor) ensureEntryLocked(node string) *executorEntry {
+	entry, ok := e.entries[node]
+	if !ok || entry == nil {
+		entry = &executorEntry{allow: make(chan struct{})}
+		e.entries[node] = entry
+		return entry
+	}
+	if entry.allow == nil {
+		entry.allow = make(chan struct{})
+	}
+	return entry
+}
+
+func (e *trackingExecutor) signalStart(ctx context.Context, node string) error {
+	select {
+	case e.started <- node:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func (e *trackingExecutor) waitForAllowance(ctx context.Context, ch <-chan struct{}) error {
+	select {
+	case <-ch:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func (e *trackingExecutor) finish(node string) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.activeNode == node {
+		e.activeNode = ""
+	}
+	delete(e.entries, node)
+}
+
+func (e *trackingExecutor) Register(node string, release func(context.Context) error) {
+	e.mu.Lock()
+	entry := e.ensureEntryLocked(node)
+	entry.release = release
+	e.mu.Unlock()
+}
+
+func (e *trackingExecutor) Allow(node string) {
+	e.mu.Lock()
+	entry := e.ensureEntryLocked(node)
+	allowCh := entry.allow
+	e.mu.Unlock()
+
+	select {
+	case <-allowCh:
+	default:
+		close(allowCh)
+	}
+}
+
+func (e *trackingExecutor) WaitForStart(timeout time.Duration) (string, error) {
+	if timeout <= 0 {
+		timeout = time.Second
+	}
+	select {
+	case node := <-e.started:
+		return node, nil
+	case <-time.After(timeout):
+		return "", fmt.Errorf("timed out waiting for reboot command start after %s", timeout)
+	}
+}
+
+func (e *trackingExecutor) WaitForCompletion(timeout time.Duration) (string, error) {
+	if timeout <= 0 {
+		timeout = time.Second
+	}
+	select {
+	case node := <-e.completed:
+		return node, nil
+	case <-time.After(timeout):
+		return "", fmt.Errorf("timed out waiting for reboot command completion after %s", timeout)
+	}
+}
+
+func (e *trackingExecutor) Invocations() []string {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	out := make([]string, len(e.invocations))
+	copy(out, e.invocations)
+	return out
+}
+
+var _ CommandExecutor = (*trackingExecutor)(nil)
 
 func baseConfig() *config.Config {
 	minFrac := 0.5
@@ -456,6 +621,372 @@ func TestRunnerLockUnavailable(t *testing.T) {
 	}
 	if len(sleepDurations) != 2 {
 		t.Fatalf("expected 2 backoff sleeps, got %d", len(sleepDurations))
+	}
+}
+
+func TestRunnerEtcdLockPreventsConcurrentReadyNodes(t *testing.T) {
+	cluster := testutil.StartEmbeddedEtcd(t)
+
+	lockKey := "/cluster/reboot"
+	nodeNames := []string{"node-a", "node-b"}
+	executor := newTrackingExecutor(len(nodeNames))
+
+	type nodeHarness struct {
+		name   string
+		cfg    *config.Config
+		runner *Runner
+	}
+
+	harnesses := make([]nodeHarness, 0, len(nodeNames))
+
+	for i, name := range nodeNames {
+		cfg := baseConfig()
+		cfg.NodeName = name
+		cfg.EtcdEndpoints = append([]string(nil), cluster.Endpoints...)
+		cfg.LockKey = lockKey
+		cfg.MinRebootIntervalSec = 0
+		cfg.RebootCommand = []string{"reboot-now", "${RC_NODE_NAME}"}
+
+		manager, err := lock.NewEtcdManager(lock.EtcdManagerOptions{
+			Endpoints: cfg.EtcdEndpoints,
+			LockKey:   cfg.LockKey,
+			TTL:       cfg.LockTTL(),
+			NodeName:  cfg.NodeName,
+			ProcessID: (i + 1) * 1001,
+		})
+		if err != nil {
+			t.Fatalf("failed to create etcd manager for %s: %v", name, err)
+		}
+		mgr := manager
+		t.Cleanup(func() {
+			_ = mgr.Close()
+		})
+
+		engine := &fakeEngine{steps: []evalStep{
+			{requires: true, results: []detector.Result{{Name: name + "-pre"}}},
+			{requires: true, results: []detector.Result{{Name: name + "-retry"}}},
+			{requires: true, results: []detector.Result{{Name: name + "-post"}}},
+		}}
+		healthRunner := &fakeHealth{steps: []healthStep{
+			{result: health.Result{ExitCode: 0}},
+			{result: health.Result{ExitCode: 0}},
+			{result: health.Result{ExitCode: 0}},
+		}}
+
+		runner, err := NewRunner(cfg, engine, healthRunner, manager, WithMaxLockAttempts(1), WithSleepFunc(func(time.Duration) {}))
+		if err != nil {
+			t.Fatalf("failed to create runner for %s: %v", name, err)
+		}
+
+		harnesses = append(harnesses, nodeHarness{name: name, cfg: cfg, runner: runner})
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	blockedCounts := make(map[string]int)
+	readyCounts := make(map[string]int)
+	var countsMu sync.Mutex
+
+	type loopResult struct {
+		name string
+		err  error
+	}
+
+	results := make(chan loopResult, len(harnesses))
+
+	for _, harness := range harnesses {
+		harness := harness
+		loop, err := NewLoop(harness.cfg, harness.runner, executor,
+			WithLoopSleepFunc(func(time.Duration) {}),
+			WithLoopInterval(10*time.Millisecond),
+			WithLoopIterationHook(func(out Outcome) {
+				switch out.Status {
+				case OutcomeReady:
+					if !out.LockAcquired {
+						panic(fmt.Sprintf("expected %s to hold the lock when ready", harness.name))
+					}
+					if out.lockRelease == nil {
+						panic(fmt.Sprintf("expected %s ready outcome to expose lock release", harness.name))
+					}
+					if out.cooldownStart != nil || out.cooldownClear != nil {
+						panic(fmt.Sprintf("expected %s ready outcome to omit cooldown handlers when interval disabled", harness.name))
+					}
+					executor.Register(harness.name, out.lockRelease)
+					countsMu.Lock()
+					readyCounts[harness.name]++
+					countsMu.Unlock()
+				case OutcomeLockUnavailable:
+					countsMu.Lock()
+					blockedCounts[harness.name]++
+					countsMu.Unlock()
+				}
+			}))
+		if err != nil {
+			t.Fatalf("failed to create loop for %s: %v", harness.name, err)
+		}
+		go func(h nodeHarness, l *Loop) {
+			err := l.Run(ctx)
+			results <- loopResult{name: h.name, err: err}
+		}(harness, loop)
+	}
+
+	first, err := executor.WaitForStart(5 * time.Second)
+	if err != nil {
+		t.Fatalf("waiting for first reboot command: %v", err)
+	}
+	executor.Allow(first)
+	if completed, err := executor.WaitForCompletion(5 * time.Second); err != nil {
+		t.Fatalf("waiting for %s completion: %v", first, err)
+	} else if completed != first {
+		t.Fatalf("expected completion for %s, got %s", first, completed)
+	}
+
+	second, err := executor.WaitForStart(5 * time.Second)
+	if err != nil {
+		t.Fatalf("waiting for second reboot command: %v", err)
+	}
+	if second == first {
+		t.Fatalf("expected distinct nodes to execute sequentially, both were %s", second)
+	}
+	executor.Allow(second)
+	if completed, err := executor.WaitForCompletion(5 * time.Second); err != nil {
+		t.Fatalf("waiting for %s completion: %v", second, err)
+	} else if completed != second {
+		t.Fatalf("expected completion for %s, got %s", second, completed)
+	}
+
+	select {
+	case extra := <-executor.started:
+		t.Fatalf("unexpected additional reboot execution by %s", extra)
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	for range harnesses {
+		res := <-results
+		if res.err != nil {
+			t.Fatalf("loop for %s returned error: %v", res.name, res.err)
+		}
+	}
+
+	invocations := executor.Invocations()
+	if len(invocations) != len(harnesses) {
+		t.Fatalf("expected %d reboot invocations, got %d (%v)", len(harnesses), len(invocations), invocations)
+	}
+	seen := make(map[string]struct{}, len(invocations))
+	for _, name := range invocations {
+		if _, ok := seen[name]; ok {
+			t.Fatalf("node %s executed reboot command multiple times (%v)", name, invocations)
+		}
+		seen[name] = struct{}{}
+	}
+
+	countsMu.Lock()
+	readySnapshot := make(map[string]int, len(readyCounts))
+	blockedSnapshot := make(map[string]int, len(blockedCounts))
+	for k, v := range readyCounts {
+		readySnapshot[k] = v
+	}
+	for k, v := range blockedCounts {
+		blockedSnapshot[k] = v
+	}
+	countsMu.Unlock()
+
+	for _, harness := range harnesses {
+		if readySnapshot[harness.name] != 1 {
+			t.Fatalf("expected %s to reach ready exactly once, got %d", harness.name, readySnapshot[harness.name])
+		}
+	}
+	for _, harness := range harnesses {
+		if harness.name == first {
+			continue
+		}
+		if blockedSnapshot[harness.name] == 0 {
+			t.Fatalf("expected %s to observe lock contention before rebooting", harness.name)
+		}
+	}
+}
+
+func TestRunnerEtcdLockSerializesThreeNodes(t *testing.T) {
+	cluster := testutil.StartEmbeddedEtcd(t)
+
+	lockKey := "/cluster/reboot"
+
+	nodeNames := []string{"node-a", "node-b", "node-c"}
+	executor := newTrackingExecutor(len(nodeNames))
+
+	type nodeHarness struct {
+		name   string
+		cfg    *config.Config
+		runner *Runner
+	}
+
+	harnesses := make([]nodeHarness, 0, len(nodeNames))
+
+	for i, name := range nodeNames {
+		cfg := baseConfig()
+		cfg.NodeName = name
+		cfg.EtcdEndpoints = append([]string(nil), cluster.Endpoints...)
+		cfg.LockKey = lockKey
+		cfg.MinRebootIntervalSec = 0
+		cfg.RebootCommand = []string{"reboot-now", "${RC_NODE_NAME}"}
+
+		manager, err := lock.NewEtcdManager(lock.EtcdManagerOptions{
+			Endpoints: cfg.EtcdEndpoints,
+			LockKey:   cfg.LockKey,
+			TTL:       cfg.LockTTL(),
+			NodeName:  cfg.NodeName,
+			ProcessID: (i + 1) * 2001,
+		})
+		if err != nil {
+			t.Fatalf("failed to create etcd manager for %s: %v", name, err)
+		}
+		mgr := manager
+		t.Cleanup(func() {
+			_ = mgr.Close()
+		})
+
+		engine := &fakeEngine{steps: []evalStep{
+			{requires: true, results: []detector.Result{{Name: name + "-pre"}}},
+			{requires: true, results: []detector.Result{{Name: name + "-retry"}}},
+			{requires: true, results: []detector.Result{{Name: name + "-post"}}},
+		}}
+		healthRunner := &fakeHealth{steps: []healthStep{
+			{result: health.Result{ExitCode: 0}},
+			{result: health.Result{ExitCode: 0}},
+			{result: health.Result{ExitCode: 0}},
+		}}
+
+		runner, err := NewRunner(cfg, engine, healthRunner, manager, WithMaxLockAttempts(1), WithSleepFunc(func(time.Duration) {}))
+		if err != nil {
+			t.Fatalf("failed to create runner for %s: %v", name, err)
+		}
+
+		harnesses = append(harnesses, nodeHarness{name: name, cfg: cfg, runner: runner})
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	blockedCounts := make(map[string]int)
+	readyCounts := make(map[string]int)
+	var countsMu sync.Mutex
+
+	type loopResult struct {
+		name string
+		err  error
+	}
+
+	results := make(chan loopResult, len(harnesses))
+
+	for _, harness := range harnesses {
+		harness := harness
+		loop, err := NewLoop(harness.cfg, harness.runner, executor,
+			WithLoopSleepFunc(func(time.Duration) {}),
+			WithLoopInterval(10*time.Millisecond),
+			WithLoopIterationHook(func(out Outcome) {
+				switch out.Status {
+				case OutcomeReady:
+					if !out.LockAcquired {
+						panic(fmt.Sprintf("expected %s to hold the lock when ready", harness.name))
+					}
+					if out.lockRelease == nil {
+						panic(fmt.Sprintf("expected %s ready outcome to expose lock release", harness.name))
+					}
+					if out.cooldownStart != nil || out.cooldownClear != nil {
+						panic(fmt.Sprintf("expected %s ready outcome to omit cooldown handlers when interval disabled", harness.name))
+					}
+					executor.Register(harness.name, out.lockRelease)
+					countsMu.Lock()
+					readyCounts[harness.name]++
+					countsMu.Unlock()
+				case OutcomeLockUnavailable:
+					countsMu.Lock()
+					blockedCounts[harness.name]++
+					countsMu.Unlock()
+				}
+			}))
+		if err != nil {
+			t.Fatalf("failed to create loop for %s: %v", harness.name, err)
+		}
+		go func(h nodeHarness, l *Loop) {
+			err := l.Run(ctx)
+			results <- loopResult{name: h.name, err: err}
+		}(harness, loop)
+	}
+
+	order := make([]string, 0, len(harnesses))
+	seen := make(map[string]struct{}, len(harnesses))
+	for range harnesses {
+		node, err := executor.WaitForStart(5 * time.Second)
+		if err != nil {
+			t.Fatalf("waiting for reboot command: %v", err)
+		}
+		if _, dup := seen[node]; dup {
+			t.Fatalf("node %s attempted multiple reboot executions", node)
+		}
+		seen[node] = struct{}{}
+		order = append(order, node)
+
+		executor.Allow(node)
+		if completed, err := executor.WaitForCompletion(5 * time.Second); err != nil {
+			t.Fatalf("waiting for %s completion: %v", node, err)
+		} else if completed != node {
+			t.Fatalf("expected completion for %s, got %s", node, completed)
+		}
+	}
+
+	select {
+	case extra := <-executor.started:
+		t.Fatalf("unexpected additional reboot execution by %s", extra)
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	for range harnesses {
+		res := <-results
+		if res.err != nil {
+			t.Fatalf("loop for %s returned error: %v", res.name, res.err)
+		}
+	}
+
+	invocations := executor.Invocations()
+	if len(invocations) != len(harnesses) {
+		t.Fatalf("expected %d reboot invocations, got %d (%v)", len(harnesses), len(invocations), invocations)
+	}
+	for i, name := range invocations {
+		if i >= len(order) || name != order[i] {
+			t.Fatalf("expected invocation order %v, got %v", order, invocations)
+		}
+	}
+
+	countsMu.Lock()
+	readySnapshot := make(map[string]int, len(readyCounts))
+	blockedSnapshot := make(map[string]int, len(blockedCounts))
+	for k, v := range readyCounts {
+		readySnapshot[k] = v
+	}
+	for k, v := range blockedCounts {
+		blockedSnapshot[k] = v
+	}
+	countsMu.Unlock()
+
+	for _, harness := range harnesses {
+		if readySnapshot[harness.name] != 1 {
+			t.Fatalf("expected %s to reach ready exactly once, got %d", harness.name, readySnapshot[harness.name])
+		}
+	}
+
+	if len(order) != len(harnesses) {
+		t.Fatalf("expected %d nodes to execute, got order %v", len(harnesses), order)
+	}
+	first := order[0]
+	for _, harness := range harnesses {
+		if harness.name == first {
+			continue
+		}
+		if blockedSnapshot[harness.name] == 0 {
+			t.Fatalf("expected %s to observe lock contention before rebooting", harness.name)
+		}
 	}
 }
 

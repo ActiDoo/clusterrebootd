@@ -159,7 +159,7 @@ func TestLoopStartsCooldownBeforeExecuting(t *testing.T) {
 	}
 }
 
-func TestLoopClearsCooldownWhenExecutorFails(t *testing.T) {
+func TestLoopKeepsCooldownWhenExecutorFails(t *testing.T) {
 	cfg := baseConfig()
 	startCalls := 0
 	clearCalls := 0
@@ -189,8 +189,8 @@ func TestLoopClearsCooldownWhenExecutorFails(t *testing.T) {
 	if startCalls != 1 {
 		t.Fatalf("expected cooldown start to be invoked once, got %d", startCalls)
 	}
-	if clearCalls != 1 {
-		t.Fatalf("expected cooldown clear to run on failure, got %d", clearCalls)
+	if clearCalls != 0 {
+		t.Fatalf("expected cooldown clear to be skipped on failure, got %d", clearCalls)
 	}
 }
 
