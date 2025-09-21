@@ -14,6 +14,8 @@ GOOS ?= $(PACKAGE_GOOS)
 GOARCH ?= $(shell go env GOARCH 2>/dev/null || echo amd64)
 LDFLAGS ?= -s -w
 VERSION ?= $(shell go run ./cmd/$(BINARY_NAME) version 2>/dev/null || echo 0.0.0-dev)
+VERSION_PKG := github.com/clusterrebootd/clusterrebootd/pkg/version
+GO_LDFLAGS := $(LDFLAGS) -X $(VERSION_PKG).Version=$(VERSION)
 SYFT ?= syft
 COSIGN ?= cosign
 SBOM_FORMAT ?= cyclonedx-json
@@ -30,7 +32,7 @@ all: build
 build:
 	@echo "==> Building $(BINARY_NAME) ($(GOOS)/$(GOARCH))"
 	@mkdir -p $(DIST_DIR)/$(GOOS)_$(GOARCH)
-	CGO_ENABLED=$(CGO_ENABLED) GOOS=$(GOOS) GOARCH=$(GOARCH) go build -trimpath -ldflags "$(LDFLAGS)" -o $(DIST_DIR)/$(GOOS)_$(GOARCH)/$(BINARY_NAME) ./cmd/$(BINARY_NAME)
+	CGO_ENABLED=$(CGO_ENABLED) GOOS=$(GOOS) GOARCH=$(GOARCH) go build -trimpath -ldflags "$(GO_LDFLAGS)" -o $(DIST_DIR)/$(GOOS)_$(GOARCH)/$(BINARY_NAME) ./cmd/$(BINARY_NAME)
 	@cp $(DIST_DIR)/$(GOOS)_$(GOARCH)/$(BINARY_NAME) $(BINARY_PATH)
 
 clean:
