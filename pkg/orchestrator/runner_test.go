@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/clusterrebootd/clusterrebootd/internal/testutil"
+	"github.com/clusterrebootd/clusterrebootd/pkg/clusterhealth"
 	"github.com/clusterrebootd/clusterrebootd/pkg/config"
 	"github.com/clusterrebootd/clusterrebootd/pkg/cooldown"
 	"github.com/clusterrebootd/clusterrebootd/pkg/detector"
@@ -158,6 +159,44 @@ func (f *fakeCooldown) Start(ctx context.Context, duration time.Duration) error 
 }
 
 func (f *fakeCooldown) Close() error { return nil }
+
+type clusterHealthReport struct {
+	healthy bool
+	stage   string
+	reason  string
+}
+
+type fakeClusterHealthManager struct {
+	mu          sync.Mutex
+	records     []clusterhealth.Record
+	listErr     error
+	reportErr   error
+	reports     []clusterHealthReport
+	statusCalls int
+}
+
+func (f *fakeClusterHealthManager) Status(ctx context.Context) ([]clusterhealth.Record, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.statusCalls++
+	copied := make([]clusterhealth.Record, len(f.records))
+	copy(copied, f.records)
+	return copied, f.listErr
+}
+
+func (f *fakeClusterHealthManager) ReportHealthy(ctx context.Context) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.reports = append(f.reports, clusterHealthReport{healthy: true})
+	return f.reportErr
+}
+
+func (f *fakeClusterHealthManager) ReportUnhealthy(ctx context.Context, report clusterhealth.Report) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.reports = append(f.reports, clusterHealthReport{healthy: false, stage: report.Stage, reason: report.Reason})
+	return f.reportErr
+}
 
 type executorEntry struct {
 	release func(context.Context) error
@@ -368,11 +407,99 @@ func TestRunnerNoRebootRequired(t *testing.T) {
 	if len(outcome.DetectorResults) != 1 {
 		t.Fatalf("expected 1 detector result, got %d", len(outcome.DetectorResults))
 	}
-	if healthRunner.calls != 0 {
-		t.Fatalf("expected health script not to run, got %d calls", healthRunner.calls)
+	if healthRunner.calls != 1 {
+		t.Fatalf("expected health script to run once for monitoring, got %d calls", healthRunner.calls)
+	}
+	if len(healthRunner.lastEnvs) != 1 {
+		t.Fatalf("expected one health invocation environment, got %d", len(healthRunner.lastEnvs))
+	}
+	if phase := healthRunner.lastEnvs[0]["RC_PHASE"]; phase != monitorHealthPhase {
+		t.Fatalf("expected RC_PHASE %q, got %q", monitorHealthPhase, phase)
 	}
 	if locker.calls != 0 {
 		t.Fatalf("expected no lock attempts, got %d", locker.calls)
+	}
+}
+
+func TestRunnerPublishesHealthyStatusWhenIdle(t *testing.T) {
+	cfg := baseConfig()
+	engine := &fakeEngine{steps: []evalStep{{requires: false, results: []detector.Result{{Name: "stub"}}}}}
+	healthRunner := &fakeHealth{steps: []healthStep{{result: health.Result{ExitCode: 0}}}}
+	locker := &fakeLocker{}
+	manager := &fakeClusterHealthManager{}
+
+	runner, err := NewRunner(cfg, engine, healthRunner, locker, WithClusterHealthManager(manager))
+	if err != nil {
+		t.Fatalf("failed to create runner: %v", err)
+	}
+
+	outcome, err := runner.RunOnce(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if outcome.Status != OutcomeNoAction {
+		t.Fatalf("expected OutcomeNoAction, got %s", outcome.Status)
+	}
+	if len(manager.reports) != 1 {
+		t.Fatalf("expected one cluster health report, got %d", len(manager.reports))
+	}
+	if !manager.reports[0].healthy {
+		t.Fatalf("expected healthy report to clear markers, got %+v", manager.reports[0])
+	}
+	if healthRunner.calls != 1 {
+		t.Fatalf("expected health script to run once, got %d", healthRunner.calls)
+	}
+	if outcome.PreLockHealthResult == nil {
+		t.Fatal("expected monitoring health result to be recorded")
+	}
+	if outcome.PreLockHealthPhase != monitorHealthPhase {
+		t.Fatalf("expected monitoring phase %q, got %q", monitorHealthPhase, outcome.PreLockHealthPhase)
+	}
+}
+
+func TestRunnerPublishesUnhealthyStatusWhenIdle(t *testing.T) {
+	cfg := baseConfig()
+	engine := &fakeEngine{steps: []evalStep{{requires: false, results: []detector.Result{{Name: "stub"}}}}}
+	healthRunner := &fakeHealth{steps: []healthStep{{result: health.Result{ExitCode: 7}}}}
+	locker := &fakeLocker{}
+	manager := &fakeClusterHealthManager{}
+
+	runner, err := NewRunner(cfg, engine, healthRunner, locker, WithClusterHealthManager(manager))
+	if err != nil {
+		t.Fatalf("failed to create runner: %v", err)
+	}
+
+	outcome, err := runner.RunOnce(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if outcome.Status != OutcomeHealthBlocked {
+		t.Fatalf("expected OutcomeHealthBlocked, got %s", outcome.Status)
+	}
+	if !strings.Contains(outcome.Message, "monitoring") {
+		t.Fatalf("expected monitoring message, got %q", outcome.Message)
+	}
+	if len(manager.reports) != 1 {
+		t.Fatalf("expected one cluster health report, got %d", len(manager.reports))
+	}
+	report := manager.reports[0]
+	if report.healthy {
+		t.Fatalf("expected unhealthy report, got healthy")
+	}
+	if report.stage != monitorHealthPhase {
+		t.Fatalf("expected stage %q, got %q", monitorHealthPhase, report.stage)
+	}
+	if report.reason != "monitor exit 7" {
+		t.Fatalf("unexpected reason %q", report.reason)
+	}
+	if locker.calls != 0 {
+		t.Fatalf("expected no lock attempts, got %d", locker.calls)
+	}
+	if outcome.PreLockHealthResult == nil {
+		t.Fatal("expected monitoring health result to be recorded")
+	}
+	if outcome.PreLockHealthResult.ExitCode != 7 {
+		t.Fatalf("expected monitoring exit code 7, got %d", outcome.PreLockHealthResult.ExitCode)
 	}
 }
 
@@ -592,6 +719,246 @@ func TestRunnerHealthBlocksBeforeLock(t *testing.T) {
 	}
 	if locker.calls != 0 {
 		t.Fatalf("expected no lock attempts, got %d", locker.calls)
+	}
+}
+
+func TestRunnerBlocksWhenClusterHealthReportsOthersUnhealthy(t *testing.T) {
+	cfg := baseConfig()
+	engine := &fakeEngine{steps: []evalStep{{requires: true, results: []detector.Result{{Name: "stub"}}}}}
+	healthRunner := &fakeHealth{}
+	locker := &fakeLocker{}
+	manager := &fakeClusterHealthManager{records: []clusterhealth.Record{{
+		Node:       "node-b",
+		Healthy:    false,
+		Stage:      "pre-lock",
+		Reason:     "exit 2",
+		ReportedAt: time.Now(),
+	}}}
+
+	runner, err := NewRunner(cfg, engine, healthRunner, locker, WithClusterHealthManager(manager))
+	if err != nil {
+		t.Fatalf("failed to create runner: %v", err)
+	}
+
+	outcome, err := runner.RunOnce(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if outcome.Status != OutcomeHealthBlocked {
+		t.Fatalf("expected OutcomeHealthBlocked, got %s", outcome.Status)
+	}
+	if len(outcome.ClusterUnhealthy) != 1 || outcome.ClusterUnhealthy[0].Node != "node-b" {
+		t.Fatalf("expected outcome to record node-b as unhealthy, got %#v", outcome.ClusterUnhealthy)
+	}
+	if healthRunner.calls != 0 {
+		t.Fatalf("expected health script not to run, got %d calls", healthRunner.calls)
+	}
+	if !strings.Contains(outcome.Message, "node-b") {
+		t.Fatalf("expected message to mention node-b, got %q", outcome.Message)
+	}
+	if len(manager.reports) != 0 {
+		t.Fatalf("expected no cluster health reports, got %d", len(manager.reports))
+	}
+}
+
+func TestRunnerBlocksWhenMinHealthyAbsoluteViolated(t *testing.T) {
+	cfg := baseConfig()
+	minAbs := 3
+	cfg.ClusterPolicies.MinHealthyAbsolute = &minAbs
+	cfg.ClusterPolicies.MinHealthyFraction = nil
+
+	engine := &fakeEngine{steps: []evalStep{{requires: true, results: []detector.Result{{Name: "stub"}}}}}
+	healthRunner := &fakeHealth{}
+	locker := &fakeLocker{}
+	manager := &fakeClusterHealthManager{records: []clusterhealth.Record{
+		{
+			Node:    "node-b",
+			Healthy: true,
+		},
+		{
+			Node:       "node-c",
+			Healthy:    false,
+			Stage:      "monitor",
+			Reason:     "exit 2",
+			ReportedAt: time.Now(),
+		},
+	}}
+
+	runner, err := NewRunner(cfg, engine, healthRunner, locker, WithClusterHealthManager(manager))
+	if err != nil {
+		t.Fatalf("failed to create runner: %v", err)
+	}
+
+	outcome, err := runner.RunOnce(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if outcome.Status != OutcomeHealthBlocked {
+		t.Fatalf("expected OutcomeHealthBlocked, got %s", outcome.Status)
+	}
+	if !strings.Contains(outcome.Message, "healthy nodes 2 below minimum 3") {
+		t.Fatalf("expected message to mention min healthy absolute violation, got %q", outcome.Message)
+	}
+	if len(outcome.ClusterUnhealthy) != 1 || outcome.ClusterUnhealthy[0].Node != "node-c" {
+		t.Fatalf("expected node-c to be reported as unhealthy, got %#v", outcome.ClusterUnhealthy)
+	}
+}
+
+func TestRunnerBlocksWhenMinHealthyFractionViolated(t *testing.T) {
+	cfg := baseConfig()
+	fraction := 0.75
+	cfg.ClusterPolicies.MinHealthyFraction = &fraction
+	cfg.ClusterPolicies.MinHealthyAbsolute = nil
+
+	engine := &fakeEngine{steps: []evalStep{{requires: true, results: []detector.Result{{Name: "stub"}}}}}
+	healthRunner := &fakeHealth{}
+	locker := &fakeLocker{}
+	manager := &fakeClusterHealthManager{records: []clusterhealth.Record{
+		{
+			Node:    "node-b",
+			Healthy: true,
+		},
+		{
+			Node:       "node-c",
+			Healthy:    false,
+			Stage:      "monitor",
+			Reason:     "exit 1",
+			ReportedAt: time.Now(),
+		},
+		{
+			Node:       "node-d",
+			Healthy:    false,
+			Stage:      "monitor",
+			Reason:     "exit 1",
+			ReportedAt: time.Now(),
+		},
+	}}
+
+	runner, err := NewRunner(cfg, engine, healthRunner, locker, WithClusterHealthManager(manager))
+	if err != nil {
+		t.Fatalf("failed to create runner: %v", err)
+	}
+
+	outcome, err := runner.RunOnce(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if outcome.Status != OutcomeHealthBlocked {
+		t.Fatalf("expected OutcomeHealthBlocked, got %s", outcome.Status)
+	}
+	if !strings.Contains(outcome.Message, "0.75") {
+		t.Fatalf("expected message to mention fraction requirement, got %q", outcome.Message)
+	}
+	if len(outcome.ClusterUnhealthy) != 2 {
+		t.Fatalf("expected two unhealthy nodes, got %d", len(outcome.ClusterUnhealthy))
+	}
+}
+
+func TestRunnerBlocksWhenOnlyFallbackNodesRemainHealthy(t *testing.T) {
+	cfg := baseConfig()
+	cfg.ClusterPolicies.MinHealthyFraction = nil
+	cfg.ClusterPolicies.MinHealthyAbsolute = nil
+	cfg.ClusterPolicies.ForbidIfOnlyFallbackLeft = true
+	cfg.ClusterPolicies.FallbackNodes = []string{cfg.NodeName, "node-b"}
+
+	engine := &fakeEngine{steps: []evalStep{{requires: true, results: []detector.Result{{Name: "stub"}}}}}
+	healthRunner := &fakeHealth{}
+	locker := &fakeLocker{}
+	manager := &fakeClusterHealthManager{records: []clusterhealth.Record{
+		{
+			Node:    "node-b",
+			Healthy: true,
+		},
+	}}
+
+	runner, err := NewRunner(cfg, engine, healthRunner, locker, WithClusterHealthManager(manager))
+	if err != nil {
+		t.Fatalf("failed to create runner: %v", err)
+	}
+
+	outcome, err := runner.RunOnce(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if outcome.Status != OutcomeHealthBlocked {
+		t.Fatalf("expected OutcomeHealthBlocked, got %s", outcome.Status)
+	}
+	if !strings.Contains(outcome.Message, "only fallback nodes remain healthy") {
+		t.Fatalf("expected fallback violation message, got %q", outcome.Message)
+	}
+	if len(outcome.ClusterUnhealthy) != 0 {
+		t.Fatalf("expected no unhealthy nodes recorded, got %#v", outcome.ClusterUnhealthy)
+	}
+	if healthRunner.calls != 0 {
+		t.Fatalf("expected health runner not to execute, got %d calls", healthRunner.calls)
+	}
+}
+
+func TestRunnerIgnoresOwnClusterHealthRecord(t *testing.T) {
+	cfg := baseConfig()
+	engine := &fakeEngine{steps: []evalStep{{requires: true, results: []detector.Result{{Name: "stub"}}}, {requires: true, results: []detector.Result{{Name: "post"}}}}}
+	healthRunner := &fakeHealth{steps: []healthStep{{result: health.Result{ExitCode: 0}}, {result: health.Result{ExitCode: 0}}}}
+	locker := &fakeLocker{outcomes: []acquireOutcome{{lease: &fakeLease{}}}}
+	manager := &fakeClusterHealthManager{records: []clusterhealth.Record{{
+		Node:    cfg.NodeName,
+		Healthy: false,
+		Stage:   "pre-lock",
+		Reason:  "exit 1",
+	}}}
+
+	runner, err := NewRunner(cfg, engine, healthRunner, locker, WithClusterHealthManager(manager))
+	if err != nil {
+		t.Fatalf("failed to create runner: %v", err)
+	}
+
+	outcome, err := runner.RunOnce(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if outcome.Status != OutcomeReady {
+		t.Fatalf("expected OutcomeReady, got %s", outcome.Status)
+	}
+	if manager.statusCalls < 2 {
+		t.Fatalf("expected cluster health inspection at least twice, got %d", manager.statusCalls)
+	}
+	if len(manager.reports) == 0 {
+		t.Fatalf("expected healthy reports to be recorded")
+	}
+	for _, rep := range manager.reports {
+		if !rep.healthy {
+			t.Fatalf("expected only healthy reports, saw %+v", rep)
+		}
+	}
+}
+
+func TestRunnerReportsClusterHealthOnScriptFailure(t *testing.T) {
+	cfg := baseConfig()
+	engine := &fakeEngine{steps: []evalStep{{requires: true, results: []detector.Result{{Name: "stub"}}}}}
+	healthRunner := &fakeHealth{steps: []healthStep{{result: health.Result{ExitCode: 3}}}}
+	locker := &fakeLocker{}
+	manager := &fakeClusterHealthManager{}
+
+	runner, err := NewRunner(cfg, engine, healthRunner, locker, WithClusterHealthManager(manager))
+	if err != nil {
+		t.Fatalf("failed to create runner: %v", err)
+	}
+
+	outcome, err := runner.RunOnce(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if outcome.Status != OutcomeHealthBlocked {
+		t.Fatalf("expected OutcomeHealthBlocked, got %s", outcome.Status)
+	}
+	if len(manager.reports) != 1 {
+		t.Fatalf("expected one cluster health report, got %d", len(manager.reports))
+	}
+	report := manager.reports[0]
+	if report.healthy {
+		t.Fatalf("expected unhealthy report, got healthy")
+	}
+	if report.stage != "pre-lock" || report.reason != "pre-lock exit 3" {
+		t.Fatalf("unexpected report contents: %+v", report)
 	}
 }
 

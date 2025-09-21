@@ -17,6 +17,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/clusterrebootd/clusterrebootd/pkg/clusterhealth"
 	"github.com/clusterrebootd/clusterrebootd/pkg/config"
 	"github.com/clusterrebootd/clusterrebootd/pkg/cooldown"
 	"github.com/clusterrebootd/clusterrebootd/pkg/detector"
@@ -141,7 +142,10 @@ func commandRunWithWriters(args []string, stdout, stderr io.Writer) int {
 	}
 	defer locker.Close()
 
-	var cooldownManager *cooldown.EtcdManager
+	var (
+		cooldownManager      *cooldown.EtcdManager
+		clusterHealthManager *clusterhealth.EtcdManager
+	)
 	if cfg.MinRebootIntervalSec > 0 {
 		cdMgr, cdErr := cooldown.NewEtcdManager(cooldown.EtcdManagerOptions{
 			Endpoints:   cfg.EtcdEndpoints,
@@ -158,6 +162,21 @@ func commandRunWithWriters(args []string, stdout, stderr io.Writer) int {
 		cooldownManager = cdMgr
 		defer cooldownManager.Close()
 	}
+
+	chMgr, chErr := clusterhealth.NewEtcdManager(clusterhealth.EtcdManagerOptions{
+		Endpoints:   cfg.EtcdEndpoints,
+		DialTimeout: 5 * time.Second,
+		Namespace:   cfg.EtcdNamespace,
+		Prefix:      "cluster_health",
+		TLS:         tlsConfig,
+		NodeName:    cfg.NodeName,
+	})
+	if chErr != nil {
+		fmt.Fprintf(stderr, "failed to initialise cluster health manager: %v\n", chErr)
+		return exitRunError
+	}
+	clusterHealthManager = chMgr
+	defer clusterHealthManager.Close()
 
 	jsonLogger := observability.NewJSONLogger(stderr)
 	metricsCollector := observability.MetricsCollector(observability.NoopMetricsCollector{})
@@ -214,6 +233,7 @@ func commandRunWithWriters(args []string, stdout, stderr io.Writer) int {
 	if cooldownManager != nil {
 		runnerOptions = append(runnerOptions, orchestrator.WithCooldownManager(cooldownManager))
 	}
+	runnerOptions = append(runnerOptions, orchestrator.WithClusterHealthManager(clusterHealthManager))
 	runner, err := orchestrator.NewRunner(cfg, engine, healthRunner, locker, runnerOptions...)
 	if err != nil {
 		fmt.Fprintf(stderr, "failed to initialise orchestrator: %v\n", err)
@@ -380,7 +400,10 @@ func commandStatusWithWriters(args []string, stdout, stderr io.Writer) int {
 		}
 		locker = etcdManager
 	}
-	var cooldownManager *cooldown.EtcdManager
+	var (
+		cooldownManager      *cooldown.EtcdManager
+		clusterHealthManager *clusterhealth.EtcdManager
+	)
 	if cfgCopy.MinRebootIntervalSec > 0 {
 		cdMgr, cdErr := cooldown.NewEtcdManager(cooldown.EtcdManagerOptions{
 			Endpoints:   cfgCopy.EtcdEndpoints,
@@ -403,6 +426,23 @@ func commandStatusWithWriters(args []string, stdout, stderr io.Writer) int {
 		defer cooldownManager.Close()
 	}
 
+	if !*skipLock {
+		chMgr, chErr := clusterhealth.NewEtcdManager(clusterhealth.EtcdManagerOptions{
+			Endpoints:   cfgCopy.EtcdEndpoints,
+			DialTimeout: 5 * time.Second,
+			Namespace:   cfgCopy.EtcdNamespace,
+			Prefix:      "cluster_health",
+			TLS:         tlsConfig,
+			NodeName:    cfgCopy.NodeName,
+		})
+		if chErr != nil {
+			fmt.Fprintf(stderr, "failed to initialise cluster health manager: %v\n", chErr)
+			return exitRunError
+		}
+		clusterHealthManager = chMgr
+		defer clusterHealthManager.Close()
+	}
+
 	runnerOptions := []orchestrator.Option{orchestrator.WithMaxLockAttempts(1), orchestrator.WithCommandEnvironment(baseEnv)}
 	if *skipLock {
 		runnerOptions = append(runnerOptions, orchestrator.WithLockAcquisition(false, "lock acquisition skipped (--skip-lock)"))
@@ -410,6 +450,8 @@ func commandStatusWithWriters(args []string, stdout, stderr io.Writer) int {
 	if cooldownManager != nil {
 		runnerOptions = append(runnerOptions, orchestrator.WithCooldownManager(cooldownManager))
 	}
+	runnerOptions = append(runnerOptions, orchestrator.WithClusterHealthManager(clusterHealthManager))
+	runnerOptions = append(runnerOptions, orchestrator.WithClusterHealthReporting(false))
 
 	runner, err := orchestrator.NewRunner(&cfgCopy, engine, healthRunner, locker, runnerOptions...)
 	if err != nil {
@@ -585,11 +627,19 @@ func writeHealthResult(w io.Writer, label string, res *health.Result) {
 	}
 }
 
+func healthLabel(phase, fallback string) string {
+	phase = strings.TrimSpace(phase)
+	if phase == "" {
+		phase = fallback
+	}
+	return fmt.Sprintf("%s health", phase)
+}
+
 func reportOutcome(stdout io.Writer, outcome orchestrator.Outcome) {
 	fmt.Fprintln(stdout, "pre-lock detector evaluations:")
 	writeDetectorResults(stdout, outcome.DetectorResults)
 	if outcome.PreLockHealthResult != nil {
-		writeHealthResult(stdout, "pre-lock health", outcome.PreLockHealthResult)
+		writeHealthResult(stdout, healthLabel(outcome.PreLockHealthPhase, "pre-lock"), outcome.PreLockHealthResult)
 	}
 	if outcome.LockAcquired {
 		fmt.Fprintln(stdout, "lock acquired")
@@ -599,7 +649,11 @@ func reportOutcome(stdout io.Writer, outcome orchestrator.Outcome) {
 		writeDetectorResults(stdout, outcome.PostLockDetectorResults)
 	}
 	if outcome.PostLockHealthResult != nil {
-		writeHealthResult(stdout, "post-lock health", outcome.PostLockHealthResult)
+		writeHealthResult(stdout, healthLabel(outcome.PostLockHealthPhase, "post-lock"), outcome.PostLockHealthResult)
+	}
+	if len(outcome.ClusterUnhealthy) > 0 {
+		fmt.Fprintln(stdout, "cluster health blockers:")
+		writeClusterHealthRecords(stdout, outcome.ClusterUnhealthy)
 	}
 	fmt.Fprintf(stdout, "outcome: %s - %s\n", outcome.Status, outcome.Message)
 	if len(outcome.Command) > 0 {
@@ -607,6 +661,26 @@ func reportOutcome(stdout io.Writer, outcome orchestrator.Outcome) {
 	}
 	if outcome.DryRun {
 		fmt.Fprintln(stdout, "dry-run enabled: reboot command not executed")
+	}
+}
+
+func writeClusterHealthRecords(w io.Writer, records []clusterhealth.Record) {
+	for _, rec := range records {
+		details := []string{}
+		if rec.Stage != "" {
+			details = append(details, fmt.Sprintf("stage=%s", rec.Stage))
+		}
+		if rec.Reason != "" {
+			details = append(details, fmt.Sprintf("reason=%s", rec.Reason))
+		}
+		if !rec.ReportedAt.IsZero() {
+			details = append(details, fmt.Sprintf("reported_at=%s", rec.ReportedAt.UTC().Format(time.RFC3339Nano)))
+		}
+		if len(details) > 0 {
+			fmt.Fprintf(w, "  - %s (%s)\n", rec.Node, strings.Join(details, ", "))
+		} else {
+			fmt.Fprintf(w, "  - %s\n", rec.Node)
+		}
 	}
 }
 

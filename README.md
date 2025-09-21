@@ -16,6 +16,8 @@ service that favours safety, explicit configuration, and verifiable supply-chain
   timing/exit-code data for diagnostics.
 - **Health gating** – executes an operator-supplied script twice (pre- and post-lock) with rich environment variables for
   node identity, cluster policies, maintenance windows, and optional metrics endpoints.
+- **Cluster-wide health coordination** – persists unhealthy node markers in etcd so peers refuse to reboot while any script is
+  reporting failure, keeps publishing each node's health even when no reboot is pending, applies configured cluster policy thresholds (minimum healthy counts, fractions, fallback protections) before allowing another reboot, and clears the block automatically once the node becomes healthy again.【F:pkg/clusterhealth/etcd.go†L18-L153】【F:pkg/orchestrator/runner.go†L321-L469】
 - **Distributed coordination** – etcd-backed mutex with annotated metadata (`node`, `pid`, `acquired_at`) so operators can
   inspect lock holders during incidents.
 - **Safeguards** – kill switch file, dry-run mode, deny/allow maintenance windows, a configurable cooldown between

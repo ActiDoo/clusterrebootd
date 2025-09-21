@@ -4,12 +4,15 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"math/rand"
 	"os"
+	"reflect"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/clusterrebootd/clusterrebootd/pkg/clusterhealth"
 	"github.com/clusterrebootd/clusterrebootd/pkg/config"
 	"github.com/clusterrebootd/clusterrebootd/pkg/cooldown"
 	"github.com/clusterrebootd/clusterrebootd/pkg/detector"
@@ -45,6 +48,8 @@ const (
 	OutcomeReady           OutcomeStatus = "ready"
 )
 
+const monitorHealthPhase = "monitor"
+
 // Outcome summarises the steps performed during RunOnce.
 type Outcome struct {
 	Status                  OutcomeStatus
@@ -54,8 +59,11 @@ type Outcome struct {
 	DetectorResults         []detector.Result
 	PostLockDetectorResults []detector.Result
 	PreLockHealthResult     *health.Result
+	PreLockHealthPhase      string
 	PostLockHealthResult    *health.Result
+	PostLockHealthPhase     string
 	Command                 []string
+	ClusterUnhealthy        []clusterhealth.Record
 	lockRelease             func(context.Context) error
 	cooldownStart           func(context.Context) error
 	cooldownClear           func(context.Context) error
@@ -103,23 +111,25 @@ func (o *Outcome) clearCooldown(ctx context.Context) error {
 
 // Runner executes the reboot orchestration logic once.
 type Runner struct {
-	cfg            *config.Config
-	detectors      DetectorEvaluator
-	health         HealthRunner
-	locker         lock.Manager
-	cooldown       cooldown.Manager
-	windows        windows.Evaluator
-	killSwitchPath string
-	checkKill      func(string) (bool, error)
-	sleep          func(time.Duration)
-	rnd            *rand.Rand
-	maxLockTries   int
-	reporter       Reporter
-	lockEnabled    bool
-	lockSkipReason string
-	now            func() time.Time
-	cooldownWindow time.Duration
-	commandEnv     map[string]string
+	cfg             *config.Config
+	detectors       DetectorEvaluator
+	health          HealthRunner
+	locker          lock.Manager
+	cooldown        cooldown.Manager
+	windows         windows.Evaluator
+	killSwitchPath  string
+	checkKill       func(string) (bool, error)
+	sleep           func(time.Duration)
+	rnd             *rand.Rand
+	maxLockTries    int
+	reporter        Reporter
+	lockEnabled     bool
+	lockSkipReason  string
+	now             func() time.Time
+	cooldownWindow  time.Duration
+	commandEnv      map[string]string
+	clusterHealth   clusterhealth.Manager
+	healthReporting bool
 }
 
 // Option configures a Runner.
@@ -161,6 +171,30 @@ func WithReporter(rep Reporter) Option {
 		if rep != nil {
 			r.reporter = rep
 		}
+	}
+}
+
+// WithClusterHealthManager wires a cluster health coordinator into the runner.
+func WithClusterHealthManager(manager clusterhealth.Manager) Option {
+	return func(r *Runner) {
+		if manager == nil {
+			r.clusterHealth = nil
+			return
+		}
+		val := reflect.ValueOf(manager)
+		if val.Kind() == reflect.Ptr && val.IsNil() {
+			r.clusterHealth = nil
+			return
+		}
+		r.clusterHealth = manager
+	}
+}
+
+// WithClusterHealthReporting toggles whether cluster health updates should be
+// published for the local node.  Reporting is enabled by default.
+func WithClusterHealthReporting(enabled bool) Option {
+	return func(r *Runner) {
+		r.healthReporting = enabled
 	}
 }
 
@@ -218,19 +252,20 @@ func NewRunner(cfg *config.Config, detectors DetectorEvaluator, healthRunner Hea
 	}
 
 	runner := &Runner{
-		cfg:            cfg,
-		detectors:      detectors,
-		health:         healthRunner,
-		locker:         locker,
-		killSwitchPath: cfg.KillSwitchFile,
-		checkKill:      defaultKillSwitchCheck,
-		sleep:          time.Sleep,
-		rnd:            rand.New(rand.NewSource(time.Now().UnixNano())),
-		maxLockTries:   5,
-		reporter:       NoopReporter{},
-		lockEnabled:    true,
-		cooldownWindow: cfg.RebootCooldownInterval(),
-		commandEnv:     cfg.BaseEnvironment(),
+		cfg:             cfg,
+		detectors:       detectors,
+		health:          healthRunner,
+		locker:          locker,
+		killSwitchPath:  cfg.KillSwitchFile,
+		checkKill:       defaultKillSwitchCheck,
+		sleep:           time.Sleep,
+		rnd:             rand.New(rand.NewSource(time.Now().UnixNano())),
+		maxLockTries:    5,
+		reporter:        NoopReporter{},
+		lockEnabled:     true,
+		cooldownWindow:  cfg.RebootCooldownInterval(),
+		commandEnv:      cfg.BaseEnvironment(),
+		healthReporting: true,
 	}
 
 	for _, opt := range opts {
@@ -315,15 +350,44 @@ func (r *Runner) RunOnce(ctx context.Context) (out Outcome, err error) {
 		return out, fmt.Errorf("detector evaluation: %w", evalErr)
 	}
 	if !requires {
+		monitorResult, monitorErr := r.runHealthWithObservability(ctx, monitorHealthPhase, false, 0)
+		out.PreLockHealthResult = &monitorResult
+		out.PreLockHealthPhase = monitorHealthPhase
+		if monitorErr != nil {
+			return out, fmt.Errorf("%s health check: %w", monitorHealthPhase, monitorErr)
+		}
+		if err := r.updateClusterHealth(ctx, monitorHealthPhase, monitorResult.ExitCode == 0, monitorResult.ExitCode); err != nil {
+			return out, fmt.Errorf("record %s cluster health: %w", monitorHealthPhase, err)
+		}
+		if monitorResult.ExitCode != 0 {
+			out.Status = OutcomeHealthBlocked
+			out.Message = fmt.Sprintf("health script reported unhealthy during monitoring (exit %d)", monitorResult.ExitCode)
+			return out, nil
+		}
 		out.Status = OutcomeNoAction
 		out.Message = "no detectors require a reboot"
 		return out, nil
 	}
 
+	records, clusterErr := r.inspectClusterHealth(ctx, "pre-lock")
+	if clusterErr != nil {
+		return out, fmt.Errorf("check cluster health before lock: %w", clusterErr)
+	}
+	if blocked, message, blockers := r.evaluateClusterPolicies(records); blocked {
+		out.Status = OutcomeHealthBlocked
+		out.ClusterUnhealthy = cloneClusterRecords(blockers)
+		out.Message = message
+		return out, nil
+	}
+
 	preHealth, healthErr := r.runHealthWithObservability(ctx, "pre-lock", false, 0)
 	out.PreLockHealthResult = &preHealth
+	out.PreLockHealthPhase = "pre-lock"
 	if healthErr != nil {
 		return out, fmt.Errorf("pre-lock health check: %w", healthErr)
+	}
+	if err := r.updateClusterHealth(ctx, "pre-lock", preHealth.ExitCode == 0, preHealth.ExitCode); err != nil {
+		return out, fmt.Errorf("record pre-lock cluster health: %w", err)
 	}
 	if preHealth.ExitCode != 0 {
 		out.Status = OutcomeHealthBlocked
@@ -405,6 +469,17 @@ func (r *Runner) RunOnce(ctx context.Context) (out Outcome, err error) {
 		return out, nil
 	}
 
+	records, clusterErr = r.inspectClusterHealth(ctx, "post-lock")
+	if clusterErr != nil {
+		return out, fmt.Errorf("check cluster health under lock: %w", clusterErr)
+	}
+	if blocked, message, blockers := r.evaluateClusterPolicies(records); blocked {
+		out.Status = OutcomeHealthBlocked
+		out.ClusterUnhealthy = cloneClusterRecords(blockers)
+		out.Message = message
+		return out, nil
+	}
+
 	requires, postResults, evalErr := r.evaluateDetectorsWithObservability(ctx, "post-lock")
 	out.PostLockDetectorResults = postResults
 	if evalErr != nil {
@@ -418,8 +493,12 @@ func (r *Runner) RunOnce(ctx context.Context) (out Outcome, err error) {
 
 	postHealth, healthErr := r.runHealthWithObservability(ctx, "post-lock", true, attempts)
 	out.PostLockHealthResult = &postHealth
+	out.PostLockHealthPhase = "post-lock"
 	if healthErr != nil {
 		return out, fmt.Errorf("post-lock health check: %w", healthErr)
+	}
+	if err := r.updateClusterHealth(ctx, "post-lock", postHealth.ExitCode == 0, postHealth.ExitCode); err != nil {
+		return out, fmt.Errorf("record post-lock cluster health: %w", err)
 	}
 	if postHealth.ExitCode != 0 {
 		out.Status = OutcomeHealthBlocked
@@ -633,6 +712,292 @@ func (r *Runner) runHealthWithObservability(ctx context.Context, phase string, l
 	res, err := r.health.Run(ctx, env)
 	r.recordHealth(ctx, phase, time.Since(start), res, err)
 	return res, err
+}
+
+func filterClusterRecords(records []clusterhealth.Record, exclude string) []clusterhealth.Record {
+	if len(records) == 0 {
+		return nil
+	}
+	filtered := make([]clusterhealth.Record, 0, len(records))
+	for _, rec := range records {
+		if exclude != "" && rec.Node == exclude {
+			continue
+		}
+		if rec.Healthy {
+			continue
+		}
+		filtered = append(filtered, rec)
+	}
+	if len(filtered) == 0 {
+		return nil
+	}
+	return filtered
+}
+
+func cloneClusterRecords(records []clusterhealth.Record) []clusterhealth.Record {
+	if len(records) == 0 {
+		return nil
+	}
+	cloned := make([]clusterhealth.Record, len(records))
+	copy(cloned, records)
+	return cloned
+}
+
+func formatClusterHealthMessage(records []clusterhealth.Record) string {
+	if len(records) == 0 {
+		return "cluster health blocked by unhealthy nodes"
+	}
+	parts := make([]string, 0, len(records))
+	for _, rec := range records {
+		details := rec.Node
+		extras := make([]string, 0, 2)
+		if rec.Stage != "" {
+			extras = append(extras, rec.Stage)
+		}
+		if rec.Reason != "" {
+			extras = append(extras, rec.Reason)
+		}
+		if len(extras) > 0 {
+			details = fmt.Sprintf("%s (%s)", details, strings.Join(extras, ", "))
+		}
+		parts = append(parts, details)
+	}
+	return "cluster health blocked by unhealthy nodes: " + strings.Join(parts, ", ")
+}
+
+func (r *Runner) inspectClusterHealth(ctx context.Context, phase string) ([]clusterhealth.Record, error) {
+	attempted := r.clusterHealth != nil
+	var (
+		records []clusterhealth.Record
+		err     error
+	)
+	if attempted {
+		records, err = r.clusterHealth.Status(ctx)
+	}
+	r.recordClusterHealthStatus(ctx, phase, attempted, records, err)
+	if !attempted {
+		return nil, nil
+	}
+	return records, err
+}
+
+func (r *Runner) evaluateClusterPolicies(records []clusterhealth.Record) (bool, string, []clusterhealth.Record) {
+	unhealthy := filterClusterRecords(records, r.cfg.NodeName)
+	reasons := make([]string, 0, 3)
+	if len(unhealthy) > 0 {
+		reasons = append(reasons, formatClusterHealthMessage(unhealthy))
+	}
+
+	policies := r.cfg.ClusterPolicies
+	fallbackSet := make(map[string]struct{}, len(policies.FallbackNodes))
+	for _, node := range policies.FallbackNodes {
+		trimmed := strings.TrimSpace(node)
+		if trimmed == "" {
+			continue
+		}
+		fallbackSet[trimmed] = struct{}{}
+	}
+
+	healthyCount := 0
+	totalCount := 0
+	healthyNonFallback := 0
+	seen := make(map[string]struct{}, len(records)+1)
+
+	nodeName := strings.TrimSpace(r.cfg.NodeName)
+	if nodeName != "" {
+		seen[nodeName] = struct{}{}
+		totalCount++
+		healthyCount++
+		if _, isFallback := fallbackSet[nodeName]; !isFallback {
+			healthyNonFallback++
+		}
+	}
+
+	for _, rec := range records {
+		node := strings.TrimSpace(rec.Node)
+		if node == "" {
+			continue
+		}
+		if _, ok := seen[node]; ok {
+			continue
+		}
+		seen[node] = struct{}{}
+		totalCount++
+		if rec.Healthy {
+			healthyCount++
+			if _, isFallback := fallbackSet[node]; !isFallback {
+				healthyNonFallback++
+			}
+		}
+	}
+
+	if policies.MinHealthyAbsolute != nil {
+		minAbs := *policies.MinHealthyAbsolute
+		if healthyCount < minAbs {
+			reasons = append(reasons, fmt.Sprintf("healthy nodes %d below minimum %d", healthyCount, minAbs))
+		}
+	}
+
+	if policies.MinHealthyFraction != nil && totalCount > 0 {
+		fraction := *policies.MinHealthyFraction
+		required := int(math.Ceil(fraction * float64(totalCount)))
+		if healthyCount < required {
+			reasons = append(reasons, fmt.Sprintf("healthy nodes %d below %.2f requirement (%d of %d)", healthyCount,
+				fraction, required, totalCount))
+		}
+	}
+
+	if policies.ForbidIfOnlyFallbackLeft && len(fallbackSet) > 0 && healthyCount > 0 && healthyNonFallback == 0 {
+		reasons = append(reasons, "only fallback nodes remain healthy")
+	}
+
+	if len(reasons) == 0 {
+		return false, "", nil
+	}
+	return true, strings.Join(reasons, "; "), unhealthy
+}
+
+func (r *Runner) updateClusterHealth(ctx context.Context, phase string, healthy bool, exitCode int) error {
+	reason := ""
+	if !healthy {
+		reason = fmt.Sprintf("%s exit %d", phase, exitCode)
+	}
+	attempted := r.clusterHealth != nil && r.healthReporting
+	var err error
+	if attempted {
+		if healthy {
+			err = r.clusterHealth.ReportHealthy(ctx)
+		} else {
+			err = r.clusterHealth.ReportUnhealthy(ctx, clusterhealth.Report{Stage: phase, Reason: reason})
+		}
+	}
+	r.recordClusterHealthUpdate(ctx, phase, healthy, reason, attempted, err)
+	if err != nil {
+		return err
+	}
+	return nil
+}
+
+func (r *Runner) recordClusterHealthStatus(ctx context.Context, phase string, attempted bool, records []clusterhealth.Record, statusErr error) {
+	if r.reporter == nil {
+		return
+	}
+	result := "healthy"
+	level := observability.LevelInfo
+	fields := map[string]interface{}{
+		"phase": phase,
+	}
+	if !attempted {
+		result = "skipped"
+		fields["skipped"] = true
+	} else {
+		total := len(records)
+		unhealthy := 0
+		healthy := 0
+		unhealthyRecords := make([]clusterhealth.Record, 0, total)
+		for _, rec := range records {
+			if rec.Healthy {
+				healthy++
+				continue
+			}
+			unhealthy++
+			unhealthyRecords = append(unhealthyRecords, rec)
+		}
+		fields["total_nodes"] = total
+		fields["healthy_count"] = healthy
+		fields["unhealthy_count"] = unhealthy
+		if unhealthy > 0 {
+			result = "unhealthy"
+			level = observability.LevelWarn
+			fields["unhealthy_nodes"] = summarizeClusterRecords(unhealthyRecords)
+		}
+	}
+	if statusErr != nil {
+		result = "error"
+		level = observability.LevelError
+		fields["error"] = statusErr.Error()
+	}
+
+	r.reporter.RecordMetric(observability.Metric{
+		Name:        "cluster_health_checks_total",
+		Type:        observability.MetricCounter,
+		Value:       1,
+		Labels:      map[string]string{"phase": phase, "result": result},
+		Description: "Number of cluster health inspections grouped by phase and result.",
+	})
+
+	r.reporter.RecordEvent(ctx, observability.Event{
+		Level:  level,
+		Node:   r.cfg.NodeName,
+		Event:  "cluster_health_status",
+		Fields: fields,
+	})
+}
+
+func (r *Runner) recordClusterHealthUpdate(ctx context.Context, phase string, healthy bool, reason string, attempted bool, updateErr error) {
+	if r.reporter == nil {
+		return
+	}
+	status := "healthy"
+	if !healthy {
+		status = "unhealthy"
+	}
+	result := "success"
+	level := observability.LevelInfo
+	fields := map[string]interface{}{
+		"phase":  phase,
+		"status": status,
+	}
+	if reason != "" {
+		fields["reason"] = reason
+	}
+	if !attempted {
+		result = "skipped"
+		fields["skipped"] = true
+	}
+	if updateErr != nil {
+		result = "error"
+		level = observability.LevelError
+		fields["error"] = updateErr.Error()
+	}
+
+	r.reporter.RecordMetric(observability.Metric{
+		Name:        "cluster_health_updates_total",
+		Type:        observability.MetricCounter,
+		Value:       1,
+		Labels:      map[string]string{"phase": phase, "status": status, "result": result},
+		Description: "Number of cluster health update attempts grouped by phase, status, and result.",
+	})
+
+	r.reporter.RecordEvent(ctx, observability.Event{
+		Level:  level,
+		Node:   r.cfg.NodeName,
+		Event:  "cluster_health_update",
+		Fields: fields,
+	})
+}
+
+func summarizeClusterRecords(records []clusterhealth.Record) []map[string]interface{} {
+	if len(records) == 0 {
+		return nil
+	}
+	summaries := make([]map[string]interface{}, 0, len(records))
+	for _, rec := range records {
+		entry := map[string]interface{}{
+			"node": rec.Node,
+		}
+		if rec.Stage != "" {
+			entry["stage"] = rec.Stage
+		}
+		if rec.Reason != "" {
+			entry["reason"] = rec.Reason
+		}
+		if !rec.ReportedAt.IsZero() {
+			entry["reported_at"] = rec.ReportedAt.UTC().Format(time.RFC3339Nano)
+		}
+		summaries = append(summaries, entry)
+	}
+	return summaries
 }
 
 func (r *Runner) recordCooldownStatus(ctx context.Context, phase string, status cooldown.Status, statusErr error) {
@@ -1062,6 +1427,9 @@ func (r *Runner) recordOutcome(ctx context.Context, out Outcome) {
 	}
 	if len(out.Command) > 0 {
 		fields["command"] = strings.Join(out.Command, " ")
+	}
+	if len(out.ClusterUnhealthy) > 0 {
+		fields["cluster_unhealthy"] = summarizeClusterRecords(out.ClusterUnhealthy)
 	}
 
 	r.reporter.RecordMetric(observability.Metric{
