@@ -62,10 +62,12 @@ it for your environment, and run the daemon with `clusterrebootd run
    the interval in etcd and refuses new reboot attempts until the window expires,
    preventing back-to-back maintenance events.【F:examples/config.yaml†L23-L30】【F:cmd/clusterrebootd/main.go†L233-L272】【F:pkg/orchestrator/runner.go†L311-L376】
 5. **Set cluster policies and maintenance windows** – `cluster_policies`
-   expresses minimum healthy nodes and fallback protections.  Maintenance windows
-   allow operators to block or explicitly permit reboots using cron-like day/time
-   ranges; deny rules always win, while allow rules opt the coordinator into the
-   listed windows.【F:examples/config.yaml†L85-L112】【F:pkg/windows/windows.go†L1-L123】
+   expresses minimum healthy nodes and fallback protections, which the
+   orchestrator enforces automatically by evaluating cluster-wide health records
+   before each reboot attempt.  Maintenance windows allow operators to block or
+   explicitly permit reboots using cron-like day/time ranges; deny rules always
+   win, while allow rules opt the coordinator into the listed
+   windows.【F:examples/config.yaml†L85-L112】【F:pkg/windows/windows.go†L1-L123】【F:pkg/orchestrator/runner.go†L321-L469】
 6. **Wire observability and safety toggles** – Define `kill_switch_file` so a
    single touch blocks reboots, and enable the Prometheus listener via
    `metrics.enabled`/`metrics.listen` when metrics are required.【F:examples/config.yaml†L41-L47】【F:examples/config.yaml†L114-L118】【F:cmd/clusterrebootd/main.go†L193-L252】
@@ -98,6 +100,13 @@ Health scripts are the final safeguard before a reboot.  Follow these practices:
   Diagnostics invoked with `status --skip-health` or `--skip-lock` set
   `RC_SKIP_HEALTH`/`RC_SKIP_LOCK` to `true`, allowing scripts to short-circuit
   optional checks when operators intentionally bypass them.【F:cmd/clusterrebootd/main.go†L298-L305】【F:pkg/orchestrator/runner.go†L485-L500】
+  - **Expect global gating on failure** – The coordinator now stores an unhealthy
+    marker in etcd whenever the script exits non-zero, runs the script even when
+    no reboot is pending so the cluster view stays current, and evaluates the
+    configured cluster policy thresholds before allowing another reboot.  Peers
+    block their own reboots until a later pass succeeds and clears the entry.
+    Use the `status` command with health checks enabled to verify the marker
+    clears after remediation.【F:pkg/clusterhealth/etcd.go†L18-L153】【F:pkg/orchestrator/runner.go†L321-L469】
 - **Return meaningful exit codes** – Exit `0` to allow the reboot, non-zero to
   block it.  Write concise status details to stdout/stderr; they are captured in
   the JSON logs and CLI output for incident response.【F:cmd/clusterrebootd/main.go†L482-L517】
