@@ -44,10 +44,11 @@
   enforce operator intent without re-reading the configuration file.
 - Cluster health coordination now records unhealthy nodes in etcd so any peer
   that detects a reboot requirement blocks until the failing node reports a
-  healthy script outcome again, and the daemon runs the gate script even when no
-  reboot is pending so the cluster view stays accurate while applying the
-  configured cluster policy thresholds to prevent cascading outages when the
-  cluster is already degraded.【F:pkg/clusterhealth/etcd.go†L18-L153】【F:pkg/orchestrator/runner.go†L321-L469】
+  healthy script outcome again.  The daemon runs the gate script even when no
+  reboot is pending and a dedicated heartbeat loop publishes the latest result
+  according to `health_publish_interval_sec`, keeping the shared view fresh while
+  applying the configured cluster policy thresholds to prevent cascading outages
+  when the cluster is already degraded.【F:pkg/clusterhealth/etcd.go†L18-L153】【F:pkg/orchestrator/runner.go†L321-L469】【F:pkg/orchestrator/health_publisher.go†L1-L96】【F:cmd/clusterrebootd/main.go†L233-L305】
 - Reboot command execution now expands the same environment placeholders (e.g.
   `RC_NODE_NAME`) so the logged and invoked command reflects the active node
   context without depending on shell-specific substitution.

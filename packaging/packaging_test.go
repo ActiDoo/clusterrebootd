@@ -12,18 +12,19 @@ import (
 )
 
 type packagingConfig struct {
-	DryRun                  bool     `yaml:"dry_run"`
-	NodeName                string   `yaml:"node_name"`
-	HealthScript            string   `yaml:"health_script"`
-	HealthTimeoutSec        int      `yaml:"health_timeout_sec"`
-	CheckIntervalSec        int      `yaml:"check_interval_sec"`
-	BackoffMinSec           int      `yaml:"backoff_min_sec"`
-	BackoffMaxSec           int      `yaml:"backoff_max_sec"`
-	LockTTLSec              int      `yaml:"lock_ttl_sec"`
-	LockKey                 string   `yaml:"lock_key"`
-	EtcdEndpoints           []string `yaml:"etcd_endpoints"`
-	EtcdNamespace           string   `yaml:"etcd_namespace"`
-	RebootRequiredDetectors []struct {
+	DryRun                   bool     `yaml:"dry_run"`
+	NodeName                 string   `yaml:"node_name"`
+	HealthScript             string   `yaml:"health_script"`
+	HealthTimeoutSec         int      `yaml:"health_timeout_sec"`
+	HealthPublishIntervalSec int      `yaml:"health_publish_interval_sec"`
+	CheckIntervalSec         int      `yaml:"check_interval_sec"`
+	BackoffMinSec            int      `yaml:"backoff_min_sec"`
+	BackoffMaxSec            int      `yaml:"backoff_max_sec"`
+	LockTTLSec               int      `yaml:"lock_ttl_sec"`
+	LockKey                  string   `yaml:"lock_key"`
+	EtcdEndpoints            []string `yaml:"etcd_endpoints"`
+	EtcdNamespace            string   `yaml:"etcd_namespace"`
+	RebootRequiredDetectors  []struct {
 		Name string `yaml:"name"`
 		Type string `yaml:"type"`
 	} `yaml:"reboot_required_detectors"`
@@ -143,6 +144,9 @@ func TestConfigTemplateHasSafeDefaults(t *testing.T) {
 	}
 	if cfg.HealthTimeoutSec <= 0 {
 		t.Fatalf("expected positive health_timeout_sec, got %d", cfg.HealthTimeoutSec)
+	}
+	if cfg.HealthPublishIntervalSec <= 0 {
+		t.Fatalf("expected positive health_publish_interval_sec, got %d", cfg.HealthPublishIntervalSec)
 	}
 	if cfg.CheckIntervalSec <= 0 {
 		t.Fatalf("expected positive check_interval_sec, got %d", cfg.CheckIntervalSec)

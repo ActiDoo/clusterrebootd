@@ -50,9 +50,12 @@ it for your environment, and run the daemon with `clusterrebootd run
    host.  File detectors watch for the presence of a path while command
    detectors interpret the exit code and inherit per-run timeouts.【F:examples/config.yaml†L1-L37】
 2. **Define the health script** – Point `health_script` at an absolute path and
-   configure `health_timeout_sec` so the runner can cancel long-running checks.
-   The orchestration loop executes the script before and after lock acquisition,
-  injecting context that indicates the current phase and lock state.【F:examples/config.yaml†L39-L55】【F:pkg/orchestrator/runner.go†L485-L500】
+   configure `health_timeout_sec` so the runner can cancel long-running checks,
+   then tune `health_publish_interval_sec` to control how often the daemon
+   refreshes the etcd heartbeat between orchestration passes.  The orchestration
+   loop executes the script before and after lock acquisition while a separate
+   heartbeat loop keeps the shared cluster view current, injecting context that
+   indicates the current phase and lock state.【F:examples/config.yaml†L39-L57】【F:pkg/orchestrator/runner.go†L485-L500】【F:pkg/orchestrator/health_publisher.go†L1-L96】
 3. **Configure the distributed lock** – Supply at least one etcd endpoint,
    namespace, and `lock_key`; ensure `lock_ttl_sec` exceeds the health timeout so
    the lease outlives the slowest permissible health check.  Enable mutual TLS by

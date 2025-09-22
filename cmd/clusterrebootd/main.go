@@ -14,6 +14,7 @@ import (
 	"os/signal"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -104,7 +105,16 @@ func commandRunWithWriters(args []string, stdout, stderr io.Writer) int {
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
+	var (
+		healthErrCh         chan error
+		waitHealthPublisher func()
+	)
+	defer func() {
+		stop()
+		if waitHealthPublisher != nil {
+			waitHealthPublisher()
+		}
+	}()
 
 	detectors, err := detector.NewAll(cfg.RebootRequiredDetectors)
 	if err != nil {
@@ -228,8 +238,12 @@ func commandRunWithWriters(args []string, stdout, stderr io.Writer) int {
 
 	reporter := orchestrator.NewStructuredReporter(cfg.NodeName, jsonLogger, metricsCollector)
 
-	runnerOptions := []orchestrator.Option{orchestrator.WithReporter(reporter)}
-	runnerOptions = append(runnerOptions, orchestrator.WithCommandEnvironment(baseEnv))
+	healthMu := &sync.Mutex{}
+	runnerOptions := []orchestrator.Option{
+		orchestrator.WithReporter(reporter),
+		orchestrator.WithCommandEnvironment(baseEnv),
+		orchestrator.WithHealthMutex(healthMu),
+	}
 	if cooldownManager != nil {
 		runnerOptions = append(runnerOptions, orchestrator.WithCooldownManager(cooldownManager))
 	}
@@ -261,6 +275,27 @@ func commandRunWithWriters(args []string, stdout, stderr io.Writer) int {
 			fmt.Fprintln(stdout, "ready outcome reached; run without --once to execute the reboot command")
 		}
 		return exitCodeForOutcome(outcome)
+	}
+
+	if runner.HealthPublishingEnabled() && cfg.HealthPublishInterval() > 0 {
+		publisher, pubErr := orchestrator.NewHealthPublisher(runner, cfg.HealthPublishInterval(),
+			orchestrator.WithHealthPublisherErrorHandler(func(err error) {
+				fmt.Fprintf(stderr, "health heartbeat failed: %v; retrying\n", err)
+			}),
+		)
+		if pubErr != nil {
+			fmt.Fprintf(stderr, "failed to initialise health publisher: %v\n", pubErr)
+			return exitRunError
+		}
+		healthErrCh = make(chan error, 1)
+		go func() {
+			healthErrCh <- publisher.Run(ctx)
+		}()
+		waitHealthPublisher = func() {
+			if err := <-healthErrCh; err != nil && !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
+				fmt.Fprintf(stderr, "health publisher exited: %v\n", err)
+			}
+		}
 	}
 
 	tracker := &trackingExecutor{delegate: orchestrator.NewExecCommandExecutor(nil, nil)}
