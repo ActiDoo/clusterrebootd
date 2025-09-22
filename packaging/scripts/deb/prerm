@@ -2,7 +2,15 @@
 set -eu
 
 systemd_active() {
-  [ -d /run/systemd/system ] && command -v systemctl >/dev/null 2>&1
+  if ! command -v systemctl >/dev/null 2>&1; then
+    return 1
+  fi
+
+  if [ ! -S /run/systemd/private ]; then
+    return 1
+  fi
+
+  return 0
 }
 
 case "$1" in
