@@ -27,6 +27,17 @@ func TestPackagesInstallInContainers(t *testing.T) {
 
 	packages := buildSmokeTestPackages(t)
 
+	cgroupMount := testutil.ContainerMount{Source: "/sys/fs/cgroup", Target: "/sys/fs/cgroup"}
+	if _, err := os.Stat(cgroupMount.Source); err != nil {
+		t.Skipf("skipping container smoke tests: cgroup filesystem not accessible: %v", err)
+	}
+
+	systemdExtraArgs := []string{"--tmpfs", "/run", "--tmpfs", "/run/lock"}
+	switch runtime.Name() {
+	case "docker", "podman":
+		systemdExtraArgs = append([]string{"--cgroupns=host"}, systemdExtraArgs...)
+	}
+
 	type testCase struct {
 		name       string
 		image      string
@@ -36,6 +47,7 @@ func TestPackagesInstallInContainers(t *testing.T) {
 		timeout    time.Duration
 		privileged bool
 		extraArgs  []string
+		mounts     []testutil.ContainerMount
 	}
 
 	cases := []testCase{
@@ -91,7 +103,8 @@ wait "$sd_pid" || true
 `,
 			timeout:    4 * time.Minute,
 			privileged: true,
-			extraArgs:  []string{"--tmpfs", "/run", "--tmpfs", "/run/lock", "-v", "/sys/fs/cgroup:/sys/fs/cgroup:ro"},
+			extraArgs:  append([]string(nil), systemdExtraArgs...),
+			mounts:     []testutil.ContainerMount{cgroupMount},
 		},
 		{
 			name:      "ubuntu-22.04",
@@ -145,7 +158,8 @@ wait "$sd_pid" || true
 `,
 			timeout:    4 * time.Minute,
 			privileged: true,
-			extraArgs:  []string{"--tmpfs", "/run", "--tmpfs", "/run/lock", "-v", "/sys/fs/cgroup:/sys/fs/cgroup:ro"},
+			extraArgs:  append([]string(nil), systemdExtraArgs...),
+			mounts:     []testutil.ContainerMount{cgroupMount},
 		},
 		{
 			name:      "rockylinux-9",
@@ -197,7 +211,8 @@ wait "$sd_pid" || true
 `,
 			timeout:    5 * time.Minute,
 			privileged: true,
-			extraArgs:  []string{"--tmpfs", "/run", "--tmpfs", "/run/lock", "-v", "/sys/fs/cgroup:/sys/fs/cgroup:ro"},
+			extraArgs:  append([]string(nil), systemdExtraArgs...),
+			mounts:     []testutil.ContainerMount{cgroupMount},
 		},
 	}
 
@@ -208,10 +223,11 @@ wait "$sd_pid" || true
 			defer cancel()
 
 			mount := testutil.ContainerMount{Source: packages[tc.format], Target: tc.mountPath, ReadOnly: true}
+			mounts := append([]testutil.ContainerMount{mount}, tc.mounts...)
 			output, err := runtime.Run(ctx, testutil.ContainerRunOptions{
 				Image:      tc.image,
 				Cmd:        []string{"bash", "-lc", tc.script},
-				Mounts:     []testutil.ContainerMount{mount},
+				Mounts:     mounts,
 				Privileged: tc.privileged,
 				ExtraArgs:  tc.extraArgs,
 			})

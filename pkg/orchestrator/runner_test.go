@@ -997,6 +997,7 @@ func TestRunnerEtcdLockPreventsConcurrentReadyNodes(t *testing.T) {
 	lockKey := "/cluster/reboot"
 	nodeNames := []string{"node-a", "node-b"}
 	executor := newTrackingExecutor(len(nodeNames))
+	const lockHoldBeforeAllow = 150 * time.Millisecond
 
 	type nodeHarness struct {
 		name   string
@@ -1102,6 +1103,8 @@ func TestRunnerEtcdLockPreventsConcurrentReadyNodes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("waiting for first reboot command: %v", err)
 	}
+	// Hold the lock briefly so the waiting node attempts acquisition and records contention.
+	time.Sleep(lockHoldBeforeAllow)
 	executor.Allow(first)
 	if completed, err := executor.WaitForCompletion(5 * time.Second); err != nil {
 		t.Fatalf("waiting for %s completion: %v", first, err)
@@ -1116,6 +1119,7 @@ func TestRunnerEtcdLockPreventsConcurrentReadyNodes(t *testing.T) {
 	if second == first {
 		t.Fatalf("expected distinct nodes to execute sequentially, both were %s", second)
 	}
+	time.Sleep(lockHoldBeforeAllow)
 	executor.Allow(second)
 	if completed, err := executor.WaitForCompletion(5 * time.Second); err != nil {
 		t.Fatalf("waiting for %s completion: %v", second, err)
@@ -1181,6 +1185,7 @@ func TestRunnerEtcdLockSerializesThreeNodes(t *testing.T) {
 
 	nodeNames := []string{"node-a", "node-b", "node-c"}
 	executor := newTrackingExecutor(len(nodeNames))
+	const lockHoldBeforeAllow = 150 * time.Millisecond
 
 	type nodeHarness struct {
 		name   string
@@ -1294,6 +1299,12 @@ func TestRunnerEtcdLockSerializesThreeNodes(t *testing.T) {
 		}
 		seen[node] = struct{}{}
 		order = append(order, node)
+
+		if len(order) < len(harnesses) {
+			// Hold the lock briefly so peers attempt acquisition and record contention
+			// before the current node completes its simulated reboot.
+			time.Sleep(lockHoldBeforeAllow)
+		}
 
 		executor.Allow(node)
 		if completed, err := executor.WaitForCompletion(5 * time.Second); err != nil {
