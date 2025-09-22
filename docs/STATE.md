@@ -83,6 +83,10 @@
   the expected paths while gracefully skipping when no container runtime is
   available.  The harness now shares the host cgroup namespace so systemd boots
   reliably on modern cgroup v2 hosts.
+- Orchestrator outcome logging now deduplicates unchanged loop results and emits
+  explicit peer status transitions when cluster members appear, report
+  unhealthy, or disappear, keeping logs actionable without spamming repetitive
+  messages.
 - Maintainer scripts now confirm a live systemd control socket exists before
   attempting to reload units, suppressing noisy failures when packages are
   installed into containers or chroots without an active init system while

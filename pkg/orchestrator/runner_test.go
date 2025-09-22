@@ -1654,6 +1654,183 @@ func TestRunnerEmitsObservabilitySignals(t *testing.T) {
 	}
 }
 
+func TestRunnerDeduplicatesOutcomeLogs(t *testing.T) {
+	cfg := baseConfig()
+	engine := &fakeEngine{steps: []evalStep{{requires: false, results: []detector.Result{{Name: "stub"}}}}}
+	healthRunner := &fakeHealth{steps: []healthStep{{result: health.Result{ExitCode: 0}}}}
+	locker := &fakeLocker{}
+
+	var outcomeEvents []observability.Event
+	var outcomeMetrics []observability.Metric
+	reporter := ReporterFuncs{
+		OnEvent: func(_ context.Context, event observability.Event) {
+			if event.Event == "run_outcome" {
+				outcomeEvents = append(outcomeEvents, event)
+			}
+		},
+		OnMetric: func(metric observability.Metric) {
+			if metric.Name == "orchestration_outcomes_total" {
+				outcomeMetrics = append(outcomeMetrics, metric)
+			}
+		},
+	}
+
+	runner, err := NewRunner(cfg, engine, healthRunner, locker, WithReporter(reporter))
+	if err != nil {
+		t.Fatalf("failed to create runner: %v", err)
+	}
+
+	if _, err := runner.RunOnce(context.Background()); err != nil {
+		t.Fatalf("unexpected error on first run: %v", err)
+	}
+	if len(outcomeEvents) != 1 {
+		t.Fatalf("expected 1 outcome event after first run, got %d", len(outcomeEvents))
+	}
+	if len(outcomeMetrics) != 1 {
+		t.Fatalf("expected 1 outcome metric after first run, got %d", len(outcomeMetrics))
+	}
+
+	outcomeEvents = nil
+	outcomeMetrics = nil
+
+	if _, err := runner.RunOnce(context.Background()); err != nil {
+		t.Fatalf("unexpected error on second run: %v", err)
+	}
+	if len(outcomeEvents) != 0 {
+		t.Fatalf("expected outcome logs to be deduplicated, got %d events", len(outcomeEvents))
+	}
+	if len(outcomeMetrics) != 1 {
+		t.Fatalf("expected outcome metric to be recorded on second run, got %d", len(outcomeMetrics))
+	}
+}
+
+func TestRunnerEmitsPeerStatusTransitions(t *testing.T) {
+	cfg := baseConfig()
+	cfg.DryRun = true
+
+	engine := &fakeEngine{steps: []evalStep{{requires: true, results: []detector.Result{{Name: "stub", RequiresReboot: true}}}}}
+	healthRunner := &fakeHealth{steps: []healthStep{{result: health.Result{ExitCode: 0}}}}
+	locker := &fakeLocker{}
+	manager := &fakeClusterHealthManager{}
+
+	var events []observability.Event
+	reporter := ReporterFuncs{
+		OnEvent: func(_ context.Context, event observability.Event) {
+			events = append(events, event)
+		},
+	}
+
+	runner, err := NewRunner(cfg, engine, healthRunner, locker, WithReporter(reporter), WithClusterHealthManager(manager))
+	if err != nil {
+		t.Fatalf("failed to create runner: %v", err)
+	}
+
+	// Establish baseline with no peer records.
+	if _, err := runner.RunOnce(context.Background()); err != nil {
+		t.Fatalf("unexpected error during baseline run: %v", err)
+	}
+	events = nil
+
+	// A healthy peer appears.
+	now := time.Now()
+	manager.records = []clusterhealth.Record{{
+		Node:       "node-b",
+		Healthy:    true,
+		ReportedAt: now,
+	}}
+	if _, err := runner.RunOnce(context.Background()); err != nil {
+		t.Fatalf("unexpected error when peer reported healthy: %v", err)
+	}
+
+	peerEvents := filterPeerEvents(events)
+	if len(peerEvents) != 1 {
+		t.Fatalf("expected 1 peer event for healthy join, got %d", len(peerEvents))
+	}
+	healthyEvent := peerEvents[0]
+	if status, _ := healthyEvent.Fields["status"].(string); status != "healthy" {
+		t.Fatalf("expected healthy status, got %v", healthyEvent.Fields["status"])
+	}
+	if prev, _ := healthyEvent.Fields["previous_status"].(string); prev != "unknown" {
+		t.Fatalf("expected previous_status unknown for new peer, got %q", prev)
+	}
+
+	events = nil
+
+	// Re-running with the same healthy record should not emit additional events.
+	if _, err := runner.RunOnce(context.Background()); err != nil {
+		t.Fatalf("unexpected error when peer remained healthy: %v", err)
+	}
+	if len(filterPeerEvents(events)) != 0 {
+		t.Fatalf("expected no additional peer events for unchanged state, got %d", len(filterPeerEvents(events)))
+	}
+
+	events = nil
+
+	// The peer reports unhealthy.
+	manager.records = []clusterhealth.Record{{
+		Node:       "node-b",
+		Healthy:    false,
+		Stage:      "pre-lock",
+		Reason:     "exit 2",
+		ReportedAt: now.Add(2 * time.Second),
+	}}
+	if _, err := runner.RunOnce(context.Background()); err != nil {
+		t.Fatalf("unexpected error when peer reported unhealthy: %v", err)
+	}
+	peerEvents = filterPeerEvents(events)
+	if len(peerEvents) != 1 {
+		t.Fatalf("expected 1 peer event for unhealthy transition, got %d", len(peerEvents))
+	}
+	unhealthyEvent := peerEvents[0]
+	if status, _ := unhealthyEvent.Fields["status"].(string); status != "unhealthy" {
+		t.Fatalf("expected unhealthy status, got %v", unhealthyEvent.Fields["status"])
+	}
+	if prev, _ := unhealthyEvent.Fields["previous_status"].(string); prev != "healthy" {
+		t.Fatalf("expected previous_status healthy, got %q", prev)
+	}
+	if stage, _ := unhealthyEvent.Fields["stage"].(string); stage != "pre-lock" {
+		t.Fatalf("expected stage pre-lock, got %q", stage)
+	}
+	if reason, _ := unhealthyEvent.Fields["reason"].(string); reason != "exit 2" {
+		t.Fatalf("expected reason exit 2, got %q", reason)
+	}
+
+	events = nil
+
+	// The peer disappears, simulating a missed heartbeat or timeout.
+	manager.records = nil
+	if _, err := runner.RunOnce(context.Background()); err != nil {
+		t.Fatalf("unexpected error when peer record disappeared: %v", err)
+	}
+	peerEvents = filterPeerEvents(events)
+	if len(peerEvents) != 1 {
+		t.Fatalf("expected 1 peer event for missing peer, got %d", len(peerEvents))
+	}
+	missingEvent := peerEvents[0]
+	if status, _ := missingEvent.Fields["status"].(string); status != "missing" {
+		t.Fatalf("expected missing status, got %v", missingEvent.Fields["status"])
+	}
+	if prev, _ := missingEvent.Fields["previous_status"].(string); prev != "unhealthy" {
+		t.Fatalf("expected previous_status unhealthy, got %q", prev)
+	}
+	if prevStage, _ := missingEvent.Fields["previous_stage"].(string); prevStage != "pre-lock" {
+		t.Fatalf("expected previous_stage pre-lock, got %q", prevStage)
+	}
+	if prevReason, _ := missingEvent.Fields["previous_reason"].(string); prevReason != "exit 2" {
+		t.Fatalf("expected previous_reason exit 2, got %q", prevReason)
+	}
+}
+
+func filterPeerEvents(events []observability.Event) []observability.Event {
+	filtered := make([]observability.Event, 0, len(events))
+	for _, event := range events {
+		if event.Event == "cluster_peer_status" {
+			filtered = append(filtered, event)
+		}
+	}
+	return filtered
+}
+
 func TestRunnerCooldownBlocksReboot(t *testing.T) {
 	cfg := baseConfig()
 	cfg.MinRebootIntervalSec = 300
