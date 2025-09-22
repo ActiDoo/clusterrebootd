@@ -23,9 +23,9 @@
 - The orchestration loop now retries transient runtime failures with a
   jittered exponential backoff and listens for SIGINT/SIGTERM so operators can
   stop the daemon cleanly when managed by service supervisors.
-- A reproducible dev container (Go 1.22 with etcd 3.6.4 and nfpm 2.43.1) is
-  available for local development, packaging experiments, and integration
-  testing.
+- A reproducible dev container (Go 1.22 with etcd 3.6.4 and nfpm 2.43.1) now also ships Podman with a
+  passwordless docker shim so local smoke tests can build and run privileged containers without extra host
+  setup, keeping packaging experiments and integration testing self-contained.
 - CLI run mode now wires the reporter into a JSON logger on stderr and an
   optional Prometheus metrics listener, exporting the address to the health
   script environment for runtime validation.

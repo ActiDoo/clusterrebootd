@@ -126,6 +126,9 @@ etcd --data-dir /tmp/etcd-data \
   --advertise-client-urls http://127.0.0.1:2379
 ```
 
+The dev container now ships Podman alongside a passwordless `docker` shim that proxies to `sudo podman`,
+enabling the packaging smoke tests to build and launch privileged containers without extra setup.
+
 ## Operations
 
 The [Operations Guide](docs/OPERATIONS.md) expands on deployment, maintenance windows, health script practices, and
