@@ -8,6 +8,7 @@ import (
 	"math/rand"
 	"os"
 	"reflect"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -115,26 +116,70 @@ func (o *Outcome) clearCooldown(ctx context.Context) error {
 
 // Runner executes the reboot orchestration logic once.
 type Runner struct {
-	cfg             *config.Config
-	detectors       DetectorEvaluator
-	health          HealthRunner
-	locker          lock.Manager
-	cooldown        cooldown.Manager
-	windows         windows.Evaluator
-	killSwitchPath  string
-	checkKill       func(string) (bool, error)
-	sleep           func(time.Duration)
-	rnd             *rand.Rand
-	maxLockTries    int
-	reporter        Reporter
-	lockEnabled     bool
-	lockSkipReason  string
-	now             func() time.Time
-	cooldownWindow  time.Duration
-	commandEnv      map[string]string
-	clusterHealth   clusterhealth.Manager
-	healthReporting bool
-	healthMu        *sync.Mutex
+	cfg              *config.Config
+	detectors        DetectorEvaluator
+	health           HealthRunner
+	locker           lock.Manager
+	cooldown         cooldown.Manager
+	windows          windows.Evaluator
+	killSwitchPath   string
+	checkKill        func(string) (bool, error)
+	sleep            func(time.Duration)
+	rnd              *rand.Rand
+	maxLockTries     int
+	reporter         Reporter
+	lockEnabled      bool
+	lockSkipReason   string
+	now              func() time.Time
+	cooldownWindow   time.Duration
+	commandEnv       map[string]string
+	clusterHealth    clusterhealth.Manager
+	healthReporting  bool
+	healthMu         *sync.Mutex
+	lastOutcome      *outcomeSummary
+	clusterSummaries map[string]clusterStatusSummary
+	clusterPeers     map[string]clusterPeerState
+}
+
+type outcomeSummary struct {
+	Status       OutcomeStatus
+	Message      string
+	DryRun       bool
+	LockAcquired bool
+}
+
+func (s outcomeSummary) equal(other outcomeSummary) bool {
+	return s.Status == other.Status &&
+		s.Message == other.Message &&
+		s.DryRun == other.DryRun &&
+		s.LockAcquired == other.LockAcquired
+}
+
+type clusterStatusSummary struct {
+	Attempted    bool
+	Result       string
+	Total        int
+	Healthy      int
+	Unhealthy    int
+	Error        string
+	UnhealthyKey string
+}
+
+func (s clusterStatusSummary) equal(other clusterStatusSummary) bool {
+	return s.Attempted == other.Attempted &&
+		s.Result == other.Result &&
+		s.Total == other.Total &&
+		s.Healthy == other.Healthy &&
+		s.Unhealthy == other.Unhealthy &&
+		s.Error == other.Error &&
+		s.UnhealthyKey == other.UnhealthyKey
+}
+
+type clusterPeerState struct {
+	Healthy    bool
+	Stage      string
+	Reason     string
+	ReportedAt time.Time
 }
 
 // Option configures a Runner.
@@ -269,21 +314,23 @@ func NewRunner(cfg *config.Config, detectors DetectorEvaluator, healthRunner Hea
 	}
 
 	runner := &Runner{
-		cfg:             cfg,
-		detectors:       detectors,
-		health:          healthRunner,
-		locker:          locker,
-		killSwitchPath:  cfg.KillSwitchFile,
-		checkKill:       defaultKillSwitchCheck,
-		sleep:           time.Sleep,
-		rnd:             rand.New(rand.NewSource(time.Now().UnixNano())),
-		maxLockTries:    5,
-		reporter:        NoopReporter{},
-		lockEnabled:     true,
-		cooldownWindow:  cfg.RebootCooldownInterval(),
-		commandEnv:      cfg.BaseEnvironment(),
-		healthReporting: true,
-		healthMu:        &sync.Mutex{},
+		cfg:              cfg,
+		detectors:        detectors,
+		health:           healthRunner,
+		locker:           locker,
+		killSwitchPath:   cfg.KillSwitchFile,
+		checkKill:        defaultKillSwitchCheck,
+		sleep:            time.Sleep,
+		rnd:              rand.New(rand.NewSource(time.Now().UnixNano())),
+		maxLockTries:     5,
+		reporter:         NoopReporter{},
+		lockEnabled:      true,
+		cooldownWindow:   cfg.RebootCooldownInterval(),
+		commandEnv:       cfg.BaseEnvironment(),
+		healthReporting:  true,
+		healthMu:         &sync.Mutex{},
+		clusterSummaries: make(map[string]clusterStatusSummary),
+		clusterPeers:     make(map[string]clusterPeerState),
 	}
 
 	for _, opt := range opts {
@@ -926,17 +973,16 @@ func (r *Runner) updateClusterHealth(ctx context.Context, phase string, healthy 
 }
 
 func (r *Runner) recordClusterHealthStatus(ctx context.Context, phase string, attempted bool, records []clusterhealth.Record, statusErr error) {
-	if r.reporter == nil {
-		return
-	}
 	result := "healthy"
 	level := observability.LevelInfo
 	fields := map[string]interface{}{
 		"phase": phase,
 	}
+	summary := clusterStatusSummary{Attempted: attempted}
 	if !attempted {
 		result = "skipped"
 		fields["skipped"] = true
+		summary.Result = result
 	} else {
 		total := len(records)
 		unhealthy := 0
@@ -953,6 +999,10 @@ func (r *Runner) recordClusterHealthStatus(ctx context.Context, phase string, at
 		fields["total_nodes"] = total
 		fields["healthy_count"] = healthy
 		fields["unhealthy_count"] = unhealthy
+		summary.Total = total
+		summary.Healthy = healthy
+		summary.Unhealthy = unhealthy
+		summary.UnhealthyKey = clusterRecordsKey(unhealthyRecords)
 		if unhealthy > 0 {
 			result = "unhealthy"
 			level = observability.LevelWarn
@@ -963,20 +1013,194 @@ func (r *Runner) recordClusterHealthStatus(ctx context.Context, phase string, at
 		result = "error"
 		level = observability.LevelError
 		fields["error"] = statusErr.Error()
+		summary.Error = statusErr.Error()
+	}
+	summary.Result = result
+
+	if r.reporter != nil {
+		r.reporter.RecordMetric(observability.Metric{
+			Name:        "cluster_health_checks_total",
+			Type:        observability.MetricCounter,
+			Value:       1,
+			Labels:      map[string]string{"phase": phase, "result": result},
+			Description: "Number of cluster health inspections grouped by phase and result.",
+		})
 	}
 
-	r.reporter.RecordMetric(observability.Metric{
-		Name:        "cluster_health_checks_total",
-		Type:        observability.MetricCounter,
-		Value:       1,
-		Labels:      map[string]string{"phase": phase, "result": result},
-		Description: "Number of cluster health inspections grouped by phase and result.",
-	})
+	peerChanged := false
+	if attempted {
+		peerChanged = r.updateClusterPeerStates(ctx, phase, records)
+	} else if len(r.clusterPeers) > 0 {
+		r.clusterPeers = make(map[string]clusterPeerState)
+	}
+
+	previous, ok := r.clusterSummaries[phase]
+	if !ok {
+		previous = clusterStatusSummary{}
+	}
+	r.clusterSummaries[phase] = summary
+
+	if r.reporter == nil {
+		return
+	}
+
+	if !peerChanged && summary.equal(previous) {
+		return
+	}
 
 	r.reporter.RecordEvent(ctx, observability.Event{
 		Level:  level,
 		Node:   r.cfg.NodeName,
 		Event:  "cluster_health_status",
+		Fields: fields,
+	})
+}
+
+func clusterRecordsKey(records []clusterhealth.Record) string {
+	if len(records) == 0 {
+		return ""
+	}
+	entries := make([]string, 0, len(records))
+	for _, rec := range records {
+		node := strings.TrimSpace(rec.Node)
+		parts := []string{node, rec.Stage, rec.Reason}
+		entries = append(entries, strings.Join(parts, "|"))
+	}
+	sort.Strings(entries)
+	return strings.Join(entries, ";")
+}
+
+func (r *Runner) updateClusterPeerStates(ctx context.Context, phase string, records []clusterhealth.Record) bool {
+	if r.clusterPeers == nil {
+		r.clusterPeers = make(map[string]clusterPeerState)
+	}
+	current := make(map[string]clusterPeerState, len(records))
+	local := strings.TrimSpace(r.cfg.NodeName)
+	changed := false
+
+	for _, rec := range records {
+		node := strings.TrimSpace(rec.Node)
+		if node == "" || node == local {
+			continue
+		}
+		state := clusterPeerState{
+			Healthy:    rec.Healthy,
+			Stage:      rec.Stage,
+			Reason:     rec.Reason,
+			ReportedAt: rec.ReportedAt,
+		}
+		current[node] = state
+
+		prev, seen := r.clusterPeers[node]
+		if !seen {
+			changed = true
+			if r.reporter != nil {
+				r.emitPeerStatusChange(ctx, phase, node, state, clusterPeerState{}, false)
+			}
+			continue
+		}
+		if peerStatesEqual(prev, state) {
+			continue
+		}
+		changed = true
+		if r.reporter != nil {
+			r.emitPeerStatusChange(ctx, phase, node, state, prev, true)
+		}
+	}
+
+	for node, prev := range r.clusterPeers {
+		if _, ok := current[node]; ok {
+			continue
+		}
+		changed = true
+		if r.reporter != nil {
+			r.emitPeerMissingEvent(ctx, phase, node, prev)
+		}
+	}
+
+	r.clusterPeers = current
+	return changed
+}
+
+func peerStatesEqual(a, b clusterPeerState) bool {
+	return a.Healthy == b.Healthy && a.Stage == b.Stage && a.Reason == b.Reason
+}
+
+func peerStatus(state clusterPeerState) string {
+	if state.Healthy {
+		return "healthy"
+	}
+	return "unhealthy"
+}
+
+func (r *Runner) emitPeerStatusChange(ctx context.Context, phase, node string, current, previous clusterPeerState, hadPrevious bool) {
+	status := peerStatus(current)
+	prevStatus := "unknown"
+	if hadPrevious {
+		prevStatus = peerStatus(previous)
+	}
+
+	fields := map[string]interface{}{
+		"phase":           phase,
+		"node":            node,
+		"status":          status,
+		"previous_status": prevStatus,
+	}
+	if !current.ReportedAt.IsZero() {
+		fields["reported_at"] = current.ReportedAt.UTC().Format(time.RFC3339Nano)
+	}
+	if current.Stage != "" {
+		fields["stage"] = current.Stage
+	}
+	if current.Reason != "" {
+		fields["reason"] = current.Reason
+	}
+	if hadPrevious {
+		if previous.Stage != "" && previous.Stage != current.Stage {
+			fields["previous_stage"] = previous.Stage
+		}
+		if previous.Reason != "" && previous.Reason != current.Reason {
+			fields["previous_reason"] = previous.Reason
+		}
+		if !previous.ReportedAt.IsZero() && (current.ReportedAt.IsZero() || !current.ReportedAt.Equal(previous.ReportedAt)) {
+			fields["previous_reported_at"] = previous.ReportedAt.UTC().Format(time.RFC3339Nano)
+		}
+	}
+
+	level := observability.LevelInfo
+	if status != "healthy" {
+		level = observability.LevelWarn
+	}
+
+	r.reporter.RecordEvent(ctx, observability.Event{
+		Level:  level,
+		Node:   r.cfg.NodeName,
+		Event:  "cluster_peer_status",
+		Fields: fields,
+	})
+}
+
+func (r *Runner) emitPeerMissingEvent(ctx context.Context, phase, node string, previous clusterPeerState) {
+	fields := map[string]interface{}{
+		"phase":           phase,
+		"node":            node,
+		"status":          "missing",
+		"previous_status": peerStatus(previous),
+	}
+	if previous.Stage != "" {
+		fields["previous_stage"] = previous.Stage
+	}
+	if previous.Reason != "" {
+		fields["previous_reason"] = previous.Reason
+	}
+	if !previous.ReportedAt.IsZero() {
+		fields["previous_reported_at"] = previous.ReportedAt.UTC().Format(time.RFC3339Nano)
+	}
+
+	r.reporter.RecordEvent(ctx, observability.Event{
+		Level:  observability.LevelWarn,
+		Node:   r.cfg.NodeName,
+		Event:  "cluster_peer_status",
 		Fields: fields,
 	})
 }
@@ -1458,6 +1682,34 @@ func (r *Runner) recordOutcome(ctx context.Context, out Outcome) {
 		return
 	}
 
+	summary := outcomeSummary{
+		Status:       out.Status,
+		Message:      out.Message,
+		DryRun:       out.DryRun,
+		LockAcquired: out.LockAcquired,
+	}
+
+	if r.reporter != nil {
+		r.reporter.RecordMetric(observability.Metric{
+			Name:        "orchestration_outcomes_total",
+			Type:        observability.MetricCounter,
+			Value:       1,
+			Labels:      map[string]string{"status": string(out.Status)},
+			Description: "Number of orchestration passes grouped by outcome status.",
+		})
+	}
+
+	if r.lastOutcome != nil && r.lastOutcome.equal(summary) {
+		r.lastOutcome = &summary
+		return
+	}
+
+	r.lastOutcome = &summary
+
+	if r.reporter == nil {
+		return
+	}
+
 	level := observability.LevelInfo
 	switch out.Status {
 	case OutcomeKillSwitch, OutcomeHealthBlocked, OutcomeWindowDenied, OutcomeWindowOutside, OutcomeLockUnavailable, OutcomeLockSkipped, OutcomeCooldownActive:
@@ -1478,14 +1730,6 @@ func (r *Runner) recordOutcome(ctx context.Context, out Outcome) {
 	if len(out.ClusterUnhealthy) > 0 {
 		fields["cluster_unhealthy"] = summarizeClusterRecords(out.ClusterUnhealthy)
 	}
-
-	r.reporter.RecordMetric(observability.Metric{
-		Name:        "orchestration_outcomes_total",
-		Type:        observability.MetricCounter,
-		Value:       1,
-		Labels:      map[string]string{"status": string(out.Status)},
-		Description: "Number of orchestration passes grouped by outcome status.",
-	})
 
 	r.reporter.RecordEvent(ctx, observability.Event{
 		Level:  level,
