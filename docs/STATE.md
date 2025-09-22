@@ -81,7 +81,8 @@
   binary starts, boots a transient systemd instance with a drop-in override to
   confirm the packaged unit launches successfully, and confirms assets land at
   the expected paths while gracefully skipping when no container runtime is
-  available.
+  available.  The harness now shares the host cgroup namespace so systemd boots
+  reliably on modern cgroup v2 hosts.
 - A top-level `Makefile` now standardises local builds, cross-compilation for
   `amd64`/`arm64`, and wraps `nfpm` so developers can reproducibly stage
   binaries in `dist/` and generate `.deb`/`.rpm` packages without ad-hoc
