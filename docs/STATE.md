@@ -83,6 +83,10 @@
   the expected paths while gracefully skipping when no container runtime is
   available.  The harness now shares the host cgroup namespace so systemd boots
   reliably on modern cgroup v2 hosts.
+- Maintainer scripts now confirm a live systemd control socket exists before
+  attempting to reload units, suppressing noisy failures when packages are
+  installed into containers or chroots without an active init system while
+  preserving the reload behaviour on real hosts.
 - A top-level `Makefile` now standardises local builds, cross-compilation for
   `amd64`/`arm64`, and wraps `nfpm` so developers can reproducibly stage
   binaries in `dist/` and generate `.deb`/`.rpm` packages without ad-hoc
