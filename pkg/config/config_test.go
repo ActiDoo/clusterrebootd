@@ -37,6 +37,9 @@ reboot_command: ["/sbin/shutdown","-r","now"]
 	if cfg.HealthTimeoutSec != 45 {
 		t.Fatalf("expected health timeout 45, got %d", cfg.HealthTimeoutSec)
 	}
+	if cfg.HealthPublishIntervalSec != 15 {
+		t.Fatalf("expected default health_publish_interval_sec 15, got %d", cfg.HealthPublishIntervalSec)
+	}
 	if cfg.BackoffMinSec != 5 {
 		t.Fatalf("expected default backoff_min_sec 5, got %d", cfg.BackoffMinSec)
 	}
@@ -90,9 +93,41 @@ func TestDetectorValidation(t *testing.T) {
 	}
 }
 
+func TestValidateRejectsInvalidHealthPublishInterval(t *testing.T) {
+	cfg := Config{
+		NodeName: "node-1",
+		RebootRequiredDetectors: []DetectorConfig{
+			{
+				Type: "file",
+				Path: "/var/run/reboot-required",
+			},
+		},
+		HealthScript:             "/bin/true",
+		EtcdEndpoints:            []string{"https://127.0.0.1:2379"},
+		RebootCommand:            []string{"/sbin/shutdown", "-r", "now"},
+		LockTTLSec:               120,
+		HealthTimeoutSec:         30,
+		HealthPublishIntervalSec: -5,
+		CheckIntervalSec:         30,
+		BackoffMinSec:            5,
+		BackoffMaxSec:            60,
+		LockKey:                  "/cluster/clusterrebootd/lock",
+	}
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected validation to fail for negative health publish interval")
+	}
+}
+
 func TestCheckInterval(t *testing.T) {
 	cfg := Config{CheckIntervalSec: 42}
 	if got := cfg.CheckInterval(); got != 42*time.Second {
 		t.Fatalf("expected 42s check interval, got %s", got)
+	}
+}
+
+func TestHealthPublishInterval(t *testing.T) {
+	cfg := Config{HealthPublishIntervalSec: 7}
+	if got := cfg.HealthPublishInterval(); got != 7*time.Second {
+		t.Fatalf("expected 7s health publish interval, got %s", got)
 	}
 }

@@ -29,6 +29,8 @@ reboot_required_detectors: []
 health_script: ""
 # Timeout in seconds before the health script is considered failed.
 health_timeout_sec: 45
+# Interval in seconds between background health publications.
+health_publish_interval_sec: 15
 
 # Control how often the daemon evaluates detectors when idle.
 check_interval_sec: 300

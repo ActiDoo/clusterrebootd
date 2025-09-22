@@ -21,6 +21,8 @@ health_script: /usr/local/bin/cluster-health-check.sh
 # RC_LOCK_HELD, and RC_LOCK_ATTEMPTS so scripts can distinguish pre/post-lock
 # runs and lock contention.
 health_timeout_sec: 45
+# Refresh the etcd health record more frequently than the main check interval.
+health_publish_interval_sec: 15
 check_interval_sec: 300
 backoff_min_sec: 5
 backoff_max_sec: 60

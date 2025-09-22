@@ -113,7 +113,7 @@
 
 * YAML‑Datei, Felder (Auszug):
 
-  * `node_name`, `reboot_required_detectors` (Liste), `health_script`, `health_timeout_sec`, `check_interval_sec`, Backoff‑Parameter, etcd‑Endpoints/TLS, `lock_key`, `lock_ttl_sec`, `reboot_command`, **Cluster‑Policies** (`min_healthy_fraction`, `min_healthy_absolute`, `forbid_if_only_fallback_left: true`).
+  * `node_name`, `reboot_required_detectors` (Liste), `health_script`, `health_timeout_sec`, `health_publish_interval_sec`, `check_interval_sec`, Backoff‑Parameter, etcd‑Endpoints/TLS, `lock_key`, `lock_ttl_sec`, `reboot_command`, **Cluster‑Policies** (`min_healthy_fraction`, `min_healthy_absolute`, `forbid_if_only_fallback_left: true`).
 * **FR‑CF‑1**: Validierung beim Start; Fehler → Exit mit Code ≠ 0.
 * **FR‑CF‑2**: Reload via SIGHUP (nicht alle Felder hot‑swappable; dokumentieren).
 

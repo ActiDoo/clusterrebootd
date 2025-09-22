@@ -10,6 +10,7 @@ import (
 	"reflect"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/clusterrebootd/clusterrebootd/pkg/clusterhealth"
@@ -48,7 +49,10 @@ const (
 	OutcomeReady           OutcomeStatus = "ready"
 )
 
-const monitorHealthPhase = "monitor"
+const (
+	monitorHealthPhase   = "monitor"
+	heartbeatHealthPhase = "heartbeat"
+)
 
 // Outcome summarises the steps performed during RunOnce.
 type Outcome struct {
@@ -130,6 +134,7 @@ type Runner struct {
 	commandEnv      map[string]string
 	clusterHealth   clusterhealth.Manager
 	healthReporting bool
+	healthMu        *sync.Mutex
 }
 
 // Option configures a Runner.
@@ -227,6 +232,18 @@ func WithCommandEnvironment(env map[string]string) Option {
 	}
 }
 
+// WithHealthMutex allows callers to share a mutex across health script executions.
+// When provided, both the orchestrator runner and any auxiliary loops (such as
+// the heartbeat publisher) serialise health script invocations to avoid
+// overlapping runs.
+func WithHealthMutex(mu *sync.Mutex) Option {
+	return func(r *Runner) {
+		if mu != nil {
+			r.healthMu = mu
+		}
+	}
+}
+
 // WithTimeSource injects a custom time source, enabling deterministic tests.
 func WithTimeSource(fn func() time.Time) Option {
 	return func(r *Runner) {
@@ -266,6 +283,7 @@ func NewRunner(cfg *config.Config, detectors DetectorEvaluator, healthRunner Hea
 		cooldownWindow:  cfg.RebootCooldownInterval(),
 		commandEnv:      cfg.BaseEnvironment(),
 		healthReporting: true,
+		healthMu:        &sync.Mutex{},
 	}
 
 	for _, opt := range opts {
@@ -295,6 +313,9 @@ func NewRunner(cfg *config.Config, detectors DetectorEvaluator, healthRunner Hea
 	}
 	if runner.commandEnv == nil {
 		runner.commandEnv = cfg.BaseEnvironment()
+	}
+	if runner.healthMu == nil {
+		runner.healthMu = &sync.Mutex{}
 	}
 
 	windowsEval, err := windows.NewEvaluator(cfg.Windows.Allow, cfg.Windows.Deny)
@@ -350,14 +371,11 @@ func (r *Runner) RunOnce(ctx context.Context) (out Outcome, err error) {
 		return out, fmt.Errorf("detector evaluation: %w", evalErr)
 	}
 	if !requires {
-		monitorResult, monitorErr := r.runHealthWithObservability(ctx, monitorHealthPhase, false, 0)
+		monitorResult, monitorErr := r.runHealthAndUpdate(ctx, monitorHealthPhase, false, 0)
 		out.PreLockHealthResult = &monitorResult
 		out.PreLockHealthPhase = monitorHealthPhase
 		if monitorErr != nil {
-			return out, fmt.Errorf("%s health check: %w", monitorHealthPhase, monitorErr)
-		}
-		if err := r.updateClusterHealth(ctx, monitorHealthPhase, monitorResult.ExitCode == 0, monitorResult.ExitCode); err != nil {
-			return out, fmt.Errorf("record %s cluster health: %w", monitorHealthPhase, err)
+			return out, monitorErr
 		}
 		if monitorResult.ExitCode != 0 {
 			out.Status = OutcomeHealthBlocked
@@ -380,14 +398,11 @@ func (r *Runner) RunOnce(ctx context.Context) (out Outcome, err error) {
 		return out, nil
 	}
 
-	preHealth, healthErr := r.runHealthWithObservability(ctx, "pre-lock", false, 0)
+	preHealth, healthErr := r.runHealthAndUpdate(ctx, "pre-lock", false, 0)
 	out.PreLockHealthResult = &preHealth
 	out.PreLockHealthPhase = "pre-lock"
 	if healthErr != nil {
-		return out, fmt.Errorf("pre-lock health check: %w", healthErr)
-	}
-	if err := r.updateClusterHealth(ctx, "pre-lock", preHealth.ExitCode == 0, preHealth.ExitCode); err != nil {
-		return out, fmt.Errorf("record pre-lock cluster health: %w", err)
+		return out, healthErr
 	}
 	if preHealth.ExitCode != 0 {
 		out.Status = OutcomeHealthBlocked
@@ -491,14 +506,11 @@ func (r *Runner) RunOnce(ctx context.Context) (out Outcome, err error) {
 		return out, nil
 	}
 
-	postHealth, healthErr := r.runHealthWithObservability(ctx, "post-lock", true, attempts)
+	postHealth, healthErr := r.runHealthAndUpdate(ctx, "post-lock", true, attempts)
 	out.PostLockHealthResult = &postHealth
 	out.PostLockHealthPhase = "post-lock"
 	if healthErr != nil {
-		return out, fmt.Errorf("post-lock health check: %w", healthErr)
-	}
-	if err := r.updateClusterHealth(ctx, "post-lock", postHealth.ExitCode == 0, postHealth.ExitCode); err != nil {
-		return out, fmt.Errorf("record post-lock cluster health: %w", err)
+		return out, healthErr
 	}
 	if postHealth.ExitCode != 0 {
 		out.Status = OutcomeHealthBlocked
@@ -698,6 +710,10 @@ func (r *Runner) evaluateDetectorsWithObservability(ctx context.Context, phase s
 }
 
 func (r *Runner) runHealthWithObservability(ctx context.Context, phase string, lockHeld bool, lockAttempts int) (health.Result, error) {
+	if r.healthMu != nil {
+		r.healthMu.Lock()
+		defer r.healthMu.Unlock()
+	}
 	if lockAttempts < 0 {
 		lockAttempts = 0
 	}
@@ -712,6 +728,37 @@ func (r *Runner) runHealthWithObservability(ctx context.Context, phase string, l
 	res, err := r.health.Run(ctx, env)
 	r.recordHealth(ctx, phase, time.Since(start), res, err)
 	return res, err
+}
+
+func (r *Runner) runHealthAndUpdate(ctx context.Context, phase string, lockHeld bool, lockAttempts int) (health.Result, error) {
+	res, err := r.runHealthWithObservability(ctx, phase, lockHeld, lockAttempts)
+	if err != nil {
+		return res, fmt.Errorf("%s health check: %w", phase, err)
+	}
+	if err := r.updateClusterHealth(ctx, phase, res.ExitCode == 0, res.ExitCode); err != nil {
+		return res, fmt.Errorf("record %s cluster health: %w", phase, err)
+	}
+	return res, nil
+}
+
+// HealthPublishingEnabled reports whether the runner is configured to publish
+// cluster health status updates for the local node.
+func (r *Runner) HealthPublishingEnabled() bool {
+	if r == nil {
+		return false
+	}
+	return r.clusterHealth != nil && r.healthReporting
+}
+
+// PublishHeartbeat executes the health script using the heartbeat phase and
+// updates the cluster health manager with the result.  Callers should skip the
+// invocation entirely when HealthPublishingEnabled reports false.
+func (r *Runner) PublishHeartbeat(ctx context.Context) error {
+	if !r.HealthPublishingEnabled() {
+		return nil
+	}
+	_, err := r.runHealthAndUpdate(ctx, heartbeatHealthPhase, false, 0)
+	return err
 }
 
 func filterClusterRecords(records []clusterhealth.Record, exclude string) []clusterhealth.Record {
