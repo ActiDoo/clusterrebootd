@@ -12,7 +12,6 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
-	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -514,42 +513,6 @@ func commandStatusWithWriters(args []string, stdout, stderr io.Writer) int {
 	fmt.Fprintln(stdout)
 
 	return exitCodeForOutcome(outcome)
-}
-
-func buildBaseEnvironment(cfg *config.Config) map[string]string {
-	env := map[string]string{
-		"RC_NODE_NAME": cfg.NodeName,
-		"RC_DRY_RUN":   strconv.FormatBool(cfg.DryRun),
-	}
-	if cfg.LockKey != "" {
-		env["RC_LOCK_KEY"] = cfg.LockKey
-	}
-	if len(cfg.EtcdEndpoints) > 0 {
-		env["RC_ETCD_ENDPOINTS"] = strings.Join(cfg.EtcdEndpoints, ",")
-	}
-	if cfg.KillSwitchFile != "" {
-		env["RC_KILL_SWITCH_FILE"] = cfg.KillSwitchFile
-	}
-	if cfg.ClusterPolicies.MinHealthyFraction != nil {
-		env["RC_CLUSTER_MIN_HEALTHY_FRACTION"] = strconv.FormatFloat(*cfg.ClusterPolicies.MinHealthyFraction, 'f', -1, 64)
-	}
-	if cfg.ClusterPolicies.MinHealthyAbsolute != nil {
-		env["RC_CLUSTER_MIN_HEALTHY_ABSOLUTE"] = strconv.Itoa(*cfg.ClusterPolicies.MinHealthyAbsolute)
-	}
-	env["RC_CLUSTER_FORBID_IF_ONLY_FALLBACK_LEFT"] = strconv.FormatBool(cfg.ClusterPolicies.ForbidIfOnlyFallbackLeft)
-	if len(cfg.ClusterPolicies.FallbackNodes) > 0 {
-		env["RC_CLUSTER_FALLBACK_NODES"] = strings.Join(cfg.ClusterPolicies.FallbackNodes, ",")
-	}
-	if cfg.MinRebootIntervalSec > 0 {
-		env["RC_MIN_REBOOT_INTERVAL_SEC"] = strconv.Itoa(cfg.MinRebootIntervalSec)
-	}
-	if len(cfg.Windows.Allow) > 0 {
-		env["RC_WINDOWS_ALLOW"] = strings.Join(cfg.Windows.Allow, ",")
-	}
-	if len(cfg.Windows.Deny) > 0 {
-		env["RC_WINDOWS_DENY"] = strings.Join(cfg.Windows.Deny, ",")
-	}
-	return env
 }
 
 func commandValidate(args []string) int {
